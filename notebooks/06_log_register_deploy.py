@@ -1,8 +1,9 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 06 — Log, register, and deploy the agent
-# MAGIC Turns the agent from notebook 05 into a real endpoint you (or an app) can call
-# MAGIC over REST, with versioning and governance via Unity Catalog.
+# MAGIC # 06 — Log and register the agent
+# MAGIC Packages the agent from notebook 05 into a versioned, governed MLflow model
+# MAGIC in Unity Catalog. Deployment as a serving endpoint happens in the next
+# MAGIC notebook, `06b_deploy_serving_endpoint.py`.
 # MAGIC
 # MAGIC This notebook defines `NewsQAAgent` again directly (rather than `%run`-ing
 # MAGIC notebook 05) on purpose: notebook 05 has its own `%pip install` +
@@ -19,7 +20,7 @@
 
 # COMMAND ----------
 
-chat_model_endpoint = "databricks-meta-llama-3-3-70b-instruct"
+chat_model_endpoint = "databricks-meta-llama-3-3-70b-instruct"  # <- must match notebook 05 and your Serving tab
 vs_endpoint = "news_agent_vs_endpoint"
 vs_index_name = "news_agent.docs.gold_chunks_index"
 NUM_RESULTS = 5
@@ -85,6 +86,7 @@ Question: {question}
 import pandas as pd
 from mlflow.models.signature import ModelSignature
 from mlflow.types.schema import Schema, ColSpec
+from mlflow.models.resources import DatabricksServingEndpoint, DatabricksVectorSearchIndex
 
 mlflow.set_registry_uri("databricks-uc")
 
@@ -93,6 +95,17 @@ registered_model_name = "news_agent.docs.news_qa_agent"
 input_schema = Schema([ColSpec("string", "question")])
 output_schema = Schema([ColSpec("string", "answer"), ColSpec("string", "sources")])
 signature = ModelSignature(inputs=input_schema, outputs=output_schema)
+
+# Tell Model Serving which OTHER Databricks resources this model calls at inference
+# time (the vector index for retrieval, the LLM endpoint for generation). Without
+# this, the deployed container has no credentials to reach either one and fails
+# to load with an opaque "MLflow raised an error loading the model" — it's not
+# enough for your own notebook session to have access; the serving container is
+# a separate identity and needs this declared explicitly.
+resources = [
+    DatabricksVectorSearchIndex(index_name=vs_index_name),
+    DatabricksServingEndpoint(endpoint_name=chat_model_endpoint),
+]
 
 # COMMAND ----------
 
@@ -107,6 +120,7 @@ with mlflow.start_run(run_name="news_qa_agent"):
             "databricks-vectorsearch",
             "databricks-langchain",
         ],
+        resources=resources,
         registered_model_name=registered_model_name,
     )
 
@@ -130,58 +144,12 @@ print(f"Alias 'champion' now points to version {model_info.registered_model_vers
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Deploy as a serving endpoint
-# MAGIC This creates a REST endpoint you can call from anywhere (a web app, Slack bot,
-# MAGIC or just curl) to get answers, pointed at the version tagged `@champion` above.
-
-# COMMAND ----------
-
-model_version = model_info.registered_model_version
-
-# COMMAND ----------
-
-import requests
-
-serving_endpoint_name = "news_qa_agent_endpoint"
-workspace_url = spark.conf.get("spark.databricks.workspaceUrl")
-token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-
-endpoint_config = {
-    "name": serving_endpoint_name,
-    "config": {
-        "served_entities": [
-            {
-                "entity_name": registered_model_name,
-                "entity_version": model_version,
-                "workload_size": "Small",
-                "scale_to_zero_enabled": True,
-            }
-        ]
-    },
-}
-
-resp = requests.post(
-    f"https://{workspace_url}/api/2.0/serving-endpoints",
-    headers={"Authorization": f"Bearer {token}"},
-    json=endpoint_config,
-)
-print(resp.status_code, resp.text)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC If the endpoint already exists and you're deploying a new model version,
-# MAGIC use this instead (PUT the config to update it):
-# MAGIC ```python
-# MAGIC requests.put(
-# MAGIC     f"https://{workspace_url}/api/2.0/serving-endpoints/{serving_endpoint_name}/config",
-# MAGIC     headers={"Authorization": f"Bearer {token}"},
-# MAGIC     json=endpoint_config["config"],
-# MAGIC )
-# MAGIC ```
-# MAGIC Endpoint creation takes several minutes. Check status under
-# MAGIC **Serving** in the left sidebar of the Databricks UI.
+# MAGIC ### Next step
+# MAGIC This notebook only logs and registers the model. Deploying it as a serving
+# MAGIC endpoint is handled by **`06b_deploy_serving_endpoint.py`** — run that next.
+# MAGIC (Splitting it out uses Databricks' own `agents.deploy()` helper, which is
+# MAGIC far more reliable than hand-building the REST call.)
 # MAGIC
 # MAGIC Each time you re-run this whole notebook, it registers a brand-new model
-# MAGIC version and moves the `@champion` alias to point at it — you never need to
-# MAGIC hunt down a version number by hand.
+# MAGIC version and moves the `@champion` alias to point at it — 06b will always
+# MAGIC pick up whatever `@champion` currently points to.

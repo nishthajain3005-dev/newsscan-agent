@@ -15,7 +15,7 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.{schema}.{volume}")
 
 # a subfolder Auto Loader will use to remember what it already ingested
-dbutils.fs.mkdirs(f"/Volumes/{catalog}/{schema}/_checkpoints/bronze")
+dbutils.fs.mkdirs(f"/Volumes/{catalog}/{schema}/{volume}/_checkpoints/bronze")
 
 print("Setup complete.")
 print(f"Upload your PDF / HTML / TXT files here (drag-and-drop works in the Databricks UI, "

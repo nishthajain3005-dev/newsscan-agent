@@ -13,7 +13,7 @@ schema = "docs"
 volume = "raw_files"
 
 raw_path = f"/Volumes/{catalog}/{schema}/{volume}"
-checkpoint_path = f"/Volumes/{catalog}/{schema}/_checkpoints/bronze"
+checkpoint_path = f"/Volumes/{catalog}/{schema}/{volume}/_checkpoints/bronze"
 bronze_table = f"{catalog}.{schema}.bronze_documents"
 
 # COMMAND ----------

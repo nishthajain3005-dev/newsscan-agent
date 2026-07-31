@@ -22,7 +22,7 @@ CHUNK_OVERLAP = 100
 
 # COMMAND ----------
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pyspark.sql.functions import udf, col, explode, sha2, concat_ws, current_timestamp
 from pyspark.sql.types import ArrayType, StringType
 
