@@ -1,0 +1,24 @@
+# Central config — change these once here, all notebooks read from it.
+# (Notebooks re-declare these as plain Python variables since Databricks
+#  notebooks don't import YAML across %run boundaries by default — this
+#  file is the single source of truth you copy values from / can load with yaml.safe_load.)
+
+catalog: news_agent
+schema: docs
+volume: raw_files
+
+bronze_table: bronze_documents
+silver_table: silver_documents
+gold_table: gold_chunks
+
+vector_search_endpoint: news_agent_vs_endpoint
+vector_index_name: gold_chunks_index
+
+embedding_model_endpoint: databricks-bge-large-en
+chat_model_endpoint: databricks-meta-llama-3-3-70b-instruct
+
+chunk_size: 800
+chunk_overlap: 100
+
+registered_model_name: news_agent.docs.news_qa_agent
+serving_endpoint_name: news_qa_agent_endpoint

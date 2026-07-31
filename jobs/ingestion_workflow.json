@@ -1,0 +1,56 @@
+{
+  "name": "newsscan_ingestion_pipeline",
+  "schedule": {
+    "quartz_cron_expression": "0 0 * * * ?",
+    "timezone_id": "UTC",
+    "pause_status": "PAUSED"
+  },
+  "comment": "Runs hourly on serverless compute -- no cluster to create, size, or manage. Picks up any new files dropped in the volume, parses, chunks, and refreshes the vector index. Set notebook_path values to match wherever you import this project in your workspace (e.g. /Workspace/Users/<you>/newsscan-agent/notebooks/...). Set pause_status to UNPAUSED once you've tested it manually.",
+  "tasks": [
+    {
+      "task_key": "ingest_bronze",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/<you>/newsscan-agent/notebooks/01_ingest_bronze"
+      },
+      "environment_key": "serverless_env"
+    },
+    {
+      "task_key": "parse_silver",
+      "depends_on": [{ "task_key": "ingest_bronze" }],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/<you>/newsscan-agent/notebooks/02_parse_clean_silver"
+      },
+      "environment_key": "serverless_env"
+    },
+    {
+      "task_key": "chunk_gold",
+      "depends_on": [{ "task_key": "parse_silver" }],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/<you>/newsscan-agent/notebooks/03_chunk_gold"
+      },
+      "environment_key": "serverless_env"
+    },
+    {
+      "task_key": "sync_vector_index",
+      "depends_on": [{ "task_key": "chunk_gold" }],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/<you>/newsscan-agent/notebooks/04_create_vector_index"
+      },
+      "environment_key": "serverless_env"
+    }
+  ],
+  "environments": [
+    {
+      "environment_key": "serverless_env",
+      "spec": {
+        "client": "2",
+        "dependencies": [
+          "pymupdf>=1.24.0",
+          "beautifulsoup4>=4.12.3",
+          "langchain>=0.2.16",
+          "databricks-vectorsearch>=0.40"
+        ]
+      }
+    }
+  ]
+}

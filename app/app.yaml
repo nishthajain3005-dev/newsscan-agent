@@ -1,0 +1,7 @@
+# Databricks Apps reads this file to know how to start your app.
+# Docs: the app runtime installs app/requirements.txt automatically, then runs this command.
+command: ["streamlit", "run", "app.py"]
+
+env:
+  - name: "SERVING_ENDPOINT_NAME"
+    value: "news_qa_agent_endpoint"
