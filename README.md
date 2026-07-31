@@ -37,6 +37,7 @@ newsscan-agent/
 │   ├── 04_create_vector_index.py
 │   ├── 05_build_and_test_agent.py
 │   ├── 06_log_register_deploy.py
+│   ├── 06b_deploy_serving_endpoint.py
 │   └── 07_ask_the_agent.py
 ├── jobs/
 │   └── ingestion_workflow.json        <- Databricks Job definition to automate steps 01-04
@@ -85,36 +86,38 @@ Either way, all files go into a Unity Catalog **Volume** — think of it as a ma
 6. ▶️ **RUN `03_chunk_gold.py`** (Serverless) — splits each document into search-ready chunks.
 7. ▶️ **RUN `04_create_vector_index.py`** (Serverless) — creates the search index (first run takes a few minutes to spin up; be patient).
 8. ▶️ **RUN `05_build_and_test_agent.py`** (Serverless) — the last cell asks a test question; check the answer makes sense and cites real documents.
-9. ▶️ **RUN `06_log_register_deploy.py`** (Serverless) — registers the agent in Unity Catalog and deploys it as a REST endpoint (several minutes). Model Serving is always serverless infrastructure, so nothing to configure there either.
-10. 🖱️ **MANUAL — Check it's live.** Left sidebar → Serving → `news_qa_agent_endpoint` → wait for status **Ready** before moving on.
-11. ▶️ **RUN `07_ask_the_agent.py`** (Serverless) to sanity-check real questions against the live endpoint.
-12. 🖱️ **MANUAL — Automate ingestion.** Open `jobs/ingestion_workflow.json`, replace `<you>` with your actual workspace username/path. In Databricks: Workflows → Create Job → "Import from JSON" (or recreate the 4 tasks by hand in the UI, leaving compute set to **Serverless** for each task) → set the schedule → un-pause it. New files dropped in the Volume now get ingested and indexed automatically — no job cluster to size or manage.
+9. ▶️ **RUN `06_log_register_deploy.py`** (Serverless) — registers the agent in Unity Catalog and tags it with a `@champion` alias. This step only logs/registers — it does not deploy anything yet.
+10. ▶️ **RUN `06b_deploy_serving_endpoint.py`** (Serverless) — deploys the `@champion` version as a live REST endpoint using Databricks' `agents.deploy()` helper (several minutes for the first deploy). Model Serving is always serverless infrastructure, so nothing to configure there either.
+11. 🖱️ **MANUAL — Check it's live.** Left sidebar → Serving → `news_qa_agent_endpoint` → **Deployments** tab → wait for status **Ready** before moving on. If it shows **Failed**, check the **Logs** tab for the actual error.
+12. ▶️ **RUN `07_ask_the_agent.py`** (Serverless) to sanity-check real questions against the live endpoint.
+13. 🖱️ **MANUAL — Automate ingestion.** Open `jobs/ingestion_workflow.json`, replace `<you>` with your actual workspace username/path. In Databricks: Workflows → Create Job → "Import from JSON" (or recreate the 4 tasks by hand in the UI, leaving compute set to **Serverless** for each task) → set the schedule → un-pause it. New files dropped in the Volume now get ingested and indexed automatically — no job cluster to size or manage.
 
 ### Part 2 — the Databricks App (chat webpage)
 
 This gives you (and anyone else in your workspace you grant access to) a simple chat webpage — no notebook required — to ask the agent questions. It calls the serving endpoint from Part 1, so **do Part 1 first**. Databricks Apps always run on serverless compute — there's no compute choice to make here at all.
 
-13. 🖱️ **MANUAL — Install the Databricks CLI** on your own laptop, if you don't already have it: `curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh` (Mac/Linux) or see [docs.databricks.com CLI install](https://docs.databricks.com/en/dev-tools/cli/install.html) for Windows.
-14. 🖱️ **MANUAL — Authenticate the CLI**: run `databricks auth login --host https://<your-workspace-url>` and follow the browser prompt.
-15. 🖱️ **MANUAL — Create the app** (one-time): `databricks apps create newsscan-agent`
-16. 🖱️ **MANUAL — Grant the app permission to call your agent.** This is the step people miss. Databricks Apps run as their own identity (a service principal), separate from you — it can't query your serving endpoint until you explicitly allow it:
+14. 🖱️ **MANUAL — Install the Databricks CLI** on your own laptop, if you don't already have it: `curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh` (Mac/Linux) or see [docs.databricks.com CLI install](https://docs.databricks.com/en/dev-tools/cli/install.html) for Windows.
+15. 🖱️ **MANUAL — Authenticate the CLI**: run `databricks auth login --host https://<your-workspace-url>` and follow the browser prompt.
+16. 🖱️ **MANUAL — Create the app** (one-time): `databricks apps create newsscan-agent`
+17. 🖱️ **MANUAL — Grant the app permission to call your agent.** This is the step people miss. Databricks Apps run as their own identity (a service principal), separate from you — it can't query your serving endpoint until you explicitly allow it:
     - Left sidebar → **Serving** → `news_qa_agent_endpoint` → **Permissions** tab
     - Add the app's service principal (find its name/ID under **Apps** → `newsscan-agent` → **Authorization**, it looks like `newsscan-agent` or a generated app ID) → grant **Can Query**
-17. 🖱️ **MANUAL — Upload the app code to your workspace** (from your laptop, in this project's folder): `databricks sync ./app /Workspace/Users/<you>/newsscan-agent/app`
-18. 🖱️ **MANUAL — Deploy it**: `databricks apps deploy newsscan-agent --source-code-path /Workspace/Users/<you>/newsscan-agent/app`
-19. 🖱️ **MANUAL — Open it.** Left sidebar → Apps → `newsscan-agent` → click the app URL. You (and anyone you grant "Can Use" on the app) now have a chat page for the agent.
+18. 🖱️ **MANUAL — Upload the app code to your workspace** (from your laptop, in this project's folder): `databricks sync ./app /Workspace/Users/<you>/newsscan-agent/app`
+19. 🖱️ **MANUAL — Deploy it**: `databricks apps deploy newsscan-agent --source-code-path /Workspace/Users/<you>/newsscan-agent/app`
+20. 🖱️ **MANUAL — Open it.** Left sidebar → Apps → `newsscan-agent` → click the app URL. You (and anyone you grant "Can Use" on the app) now have a chat page for the agent.
 
-To push a code change later: edit `app/app.py`, then repeat steps 17–18 (`sync` then `deploy`) — no need to recreate the app.
+To push a code change later: edit `app/app.py`, then repeat steps 18–19 (`sync` then `deploy`) — no need to recreate the app.
 
 ### After the first run
-Steps 4–7 (and the job in step 12) are all designed to be safe to re-run — they only process files/documents/chunks that are new since last time, so day-to-day you just drop new files in the volume and either wait for the schedule or manually trigger the job. Because everything is serverless, there's also no cluster sitting around costing you money between runs — compute only exists for the seconds/minutes each step actually takes.
+Steps 4–7 (and the job in step 13) are all designed to be safe to re-run — they only process files/documents/chunks that are new since last time, so day-to-day you just drop new files in the volume and either wait for the schedule or manually trigger the job. Because everything is serverless, there's also no cluster sitting around costing you money between runs — compute only exists for the seconds/minutes each step actually takes.
 
 ### Common gotchas for beginners
 - **"Catalog does not exist" errors**: you (or an admin) need `CREATE CATALOG` privilege, or ask an admin to run notebook 00 for you once.
 - **Vector index stuck "Provisioning"**: this is normal for the first few minutes after creation — grab a coffee.
 - **`ChatDatabricks` / embedding endpoint errors**: means Foundation Model APIs aren't enabled for your workspace yet — ask your workspace admin to enable "Foundation Model APIs — pay-per-token" under the Serving tab.
 - **PDF parsing returns empty text**: some PDFs are scanned images rather than real text — those need OCR (not covered here); text-based PDFs and HTML/TXT work out of the box.
-- **App shows an error calling the agent / 403**: almost always step 16 — the app's service principal doesn't have "Can Query" on the serving endpoint yet.
+- **Serving endpoint fails with "MLflow raised an error loading the model" / "no replicas in a running state"**: almost always means the model was logged without declaring the `resources` it depends on (the vector index, the LLM endpoint) — see notebook 06's `resources=[...]` block. Re-run 06 then 06b.
+- **App shows an error calling the agent / 403**: almost always step 17 — the app's service principal doesn't have "Can Query" on the serving endpoint yet.
 - **`databricks apps create` fails with a permissions error**: Databricks Apps needs to be enabled for your workspace and you need at least "Can Create" apps permission — ask your workspace admin.
 - **Don't see "Serverless" in the compute dropdown**: your workspace admin needs to turn on serverless compute for notebooks/jobs (Admin Console → Compute → Serverless). Everything in this project assumes it's on.
 - **A library "not found" error on a notebook you re-ran**: serverless sessions are ephemeral — each time a notebook detaches/reattaches (e.g. after being idle, or in a fresh Job run) it starts clean, so the `%pip install` cell at the top of that notebook needs to run again. That's expected; just re-run the whole notebook rather than a single cell lower down.
