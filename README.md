@@ -87,7 +87,7 @@ Either way, all files go into a Unity Catalog **Volume** — think of it as a ma
 7. ▶️ **RUN `04_create_vector_index.py`** (Serverless) — creates the search index (first run takes a few minutes to spin up; be patient).
 8. ▶️ **RUN `05_build_and_test_agent.py`** (Serverless) — the last cell asks a test question; check the answer makes sense and cites real documents.
 9. ▶️ **RUN `06_log_register_deploy.py`** (Serverless) — registers the agent in Unity Catalog and tags it with a `@champion` alias. This step only logs/registers — it does not deploy anything yet.
-10. ▶️ **RUN `06b_deploy_serving_endpoint.py`** (Serverless) — deploys the `@champion` version as a live REST endpoint using Databricks' `agents.deploy()` helper (several minutes for the first deploy). Model Serving is always serverless infrastructure, so nothing to configure there either.
+10. ▶️ **RUN `06b_deploy_serving_endpoint.py`** (Serverless) — deploys the `@champion` version as a live REST endpoint (several minutes for the first deploy). Model Serving is always serverless infrastructure, so nothing to configure there either.
 11. 🖱️ **MANUAL — Check it's live.** Left sidebar → Serving → `news_qa_agent_endpoint` → **Deployments** tab → wait for status **Ready** before moving on. If it shows **Failed**, check the **Logs** tab for the actual error.
 12. ▶️ **RUN `07_ask_the_agent.py`** (Serverless) to sanity-check real questions against the live endpoint.
 13. 🖱️ **MANUAL — Automate ingestion.** Open `jobs/ingestion_workflow.json`, replace `<you>` with your actual workspace username/path. In Databricks: Workflows → Create Job → "Import from JSON" (or recreate the 4 tasks by hand in the UI, leaving compute set to **Serverless** for each task) → set the schedule → un-pause it. New files dropped in the Volume now get ingested and indexed automatically — no job cluster to size or manage.
@@ -107,6 +107,24 @@ This gives you (and anyone else in your workspace you grant access to) a simple 
 20. 🖱️ **MANUAL — Open it.** Left sidebar → Apps → `newsscan-agent` → click the app URL. You (and anyone you grant "Can Use" on the app) now have a chat page for the agent.
 
 To push a code change later: edit `app/app.py`, then repeat steps 18–19 (`sync` then `deploy`) — no need to recreate the app.
+
+### Access control (who's allowed to use the app)
+
+The app checks, on every visit, whether the logged-in user is allowed in — everyone else sees "Access denied." A user is let in if **either** of these is true:
+- their email is individually listed in `ALLOWED_USERS` (in `app/app.yaml`), **or**
+- they belong to the `ALLOWED_GROUP_NAME` Databricks group (default name `newsscan-agent-users`)
+
+**The individual list needs no setup at all** — just edit `app/app.yaml` and redeploy. Good for letting yourself in immediately, or one-off access, without touching group membership.
+
+**The group check needs one-time manual setup:**
+
+21. 🖱️ **MANUAL — Create the group.** Databricks UI (or account console) → **Admin Settings** → **Identity and access** → **Groups** → **Add group**. Name it exactly `newsscan-agent-users` (or pick your own name — if you change it, also update `ALLOWED_GROUP_NAME` in `app/app.yaml` to match).
+22. 🖱️ **MANUAL — Add members.** Open the group → **Members** tab → add whichever users should be allowed to use the agent.
+23. 🖱️ **MANUAL — Let the app read group membership.** The app's service principal needs permission to look up users' group membership via the SCIM API — by default it doesn't have this. Ask your workspace/account admin to grant the app's service principal a role that includes "read" access to Users/Groups (in many workspaces this means adding it as a member of a group with delegated user-management rights, or granting it limited SCIM read scope — the exact option depends on your workspace's admin settings, so this is one to check with your admin on if you don't see it yourself).
+
+If step 23 isn't set up yet, anyone not on the individual list will see a distinct warning ("Couldn't verify access...") rather than being silently let in or wrongly blocked — and that same warning tells them to ask about being added to `ALLOWED_USERS` as an immediate workaround while the group permission is sorted out.
+
+**To change who's allowed** later: add/remove members from the `newsscan-agent-users` group in the UI (no redeploy needed), or edit `ALLOWED_USERS` in `app/app.yaml` and redeploy.
 
 ### After the first run
 Steps 4–7 (and the job in step 13) are all designed to be safe to re-run — they only process files/documents/chunks that are new since last time, so day-to-day you just drop new files in the volume and either wait for the schedule or manually trigger the job. Because everything is serverless, there's also no cluster sitting around costing you money between runs — compute only exists for the seconds/minutes each step actually takes.
