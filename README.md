@@ -112,19 +112,27 @@ To push a code change later: edit `app/app.py`, then repeat steps 18–19 (`sync
 
 The app checks, on every visit, whether the logged-in user is allowed in — everyone else sees "Access denied." A user is let in if **either** of these is true:
 - their email is individually listed in `ALLOWED_USERS` (in `app/app.yaml`), **or**
-- they belong to the `ALLOWED_GROUP_NAME` Databricks group (default name `newsscan-agent-users`)
+- they belong to **any one** of the groups listed in `ALLOWED_GROUPS`
 
-**The individual list needs no setup at all** — just edit `app/app.yaml` and redeploy. Good for letting yourself in immediately, or one-off access, without touching group membership.
+**Demo setup: 4 role-based groups.** For now this is standing in for whatever the business eventually settles on — `ALLOWED_GROUPS` defaults to:
+```
+data-engineers,data-scientists,business-analysts,project-managers
+```
+Membership in any single one of these four is enough to get in — someone doesn't need to be in all four. This is deliberately just a comma-separated list in `app.yaml`, so changing which roles are allowed later — adding a fifth, removing one, renaming one — is a one-line edit and a redeploy, no code change.
 
-**The group check needs one-time manual setup:**
+**The individual list needs no setup at all** — just edit `ALLOWED_USERS` in `app/app.yaml` and redeploy. Good for letting yourself in immediately, or one-off access, without touching group membership.
 
-21. 🖱️ **MANUAL — Create the group.** Databricks UI (or account console) → **Admin Settings** → **Identity and access** → **Groups** → **Add group**. Name it exactly `newsscan-agent-users` (or pick your own name — if you change it, also update `ALLOWED_GROUP_NAME` in `app/app.yaml` to match).
-22. 🖱️ **MANUAL — Add members.** Open the group → **Members** tab → add whichever users should be allowed to use the agent.
-23. 🖱️ **MANUAL — Let the app read group membership.** The app's service principal needs permission to look up users' group membership via the SCIM API — by default it doesn't have this. Ask your workspace/account admin to grant the app's service principal a role that includes "read" access to Users/Groups (in many workspaces this means adding it as a member of a group with delegated user-management rights, or granting it limited SCIM read scope — the exact option depends on your workspace's admin settings, so this is one to check with your admin on if you don't see it yourself).
+**The group check needs one-time manual setup, once per group:**
+
+21. 🖱️ **MANUAL — Create the four groups.** Databricks UI (or account console) → **Admin Settings** → **Identity and access** → **Groups** → **Add group**. Create each of: `data-engineers`, `data-scientists`, `business-analysts`, `project-managers` (exact names — if you use different names, update `ALLOWED_GROUPS` in `app/app.yaml` to match).
+22. 🖱️ **MANUAL — Add members to each.** Open each group → **Members** tab → add the people who belong to that role.
+23. 🖱️ **MANUAL — Let the app read group membership.** The app's service principal needs permission to look up users' group membership via the SCIM API — by default it doesn't have this. Ask your workspace/account admin to grant the app's service principal a role that includes "read" access to Users/Groups (in many workspaces this means adding it as a member of a group with delegated user-management rights, or granting it limited SCIM read scope — the exact option depends on your workspace's admin settings, so this is one to check with your admin on if you don't see it yourself). This one grant covers all four groups — it's a single permission, not per-group.
 
 If step 23 isn't set up yet, anyone not on the individual list will see a distinct warning ("Couldn't verify access...") rather than being silently let in or wrongly blocked — and that same warning tells them to ask about being added to `ALLOWED_USERS` as an immediate workaround while the group permission is sorted out.
 
-**To change who's allowed** later: add/remove members from the `newsscan-agent-users` group in the UI (no redeploy needed), or edit `ALLOWED_USERS` in `app/app.yaml` and redeploy.
+**To change who's allowed** later:
+- Add/remove members from a group in the UI (no redeploy needed), or
+- Edit `ALLOWED_GROUPS` or `ALLOWED_USERS` in `app/app.yaml` and redeploy (needed when adding/removing/renaming a *group itself*, not for changing who's in an existing group)
 
 ### After the first run
 Steps 4–7 (and the job in step 13) are all designed to be safe to re-run — they only process files/documents/chunks that are new since last time, so day-to-day you just drop new files in the volume and either wait for the schedule or manually trigger the job. Because everything is serverless, there's also no cluster sitting around costing you money between runs — compute only exists for the seconds/minutes each step actually takes.
