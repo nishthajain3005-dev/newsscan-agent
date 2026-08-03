@@ -7,14 +7,18 @@ principal) to call other Databricks resources with — no API keys to manage —
 but you MUST manually grant that identity permission to query the serving
 endpoint. See the "Databricks App" section of README.md, step App-4.
 
-ACCESS CONTROL: a user can use this app if EITHER they're individually listed in
-ALLOWED_USERS, OR they belong to the ALLOWED_GROUP_NAME group. See the
-"Access control" section of README.md for the one-time manual setup the group
-check requires (creating the group, adding members, and granting the app's
-service principal permission to read group membership). The individual list
-needs no special permission at all — useful for letting yourself in while
-that permission grant is still pending, or for one-off access without
-touching group membership.
+ACCESS CONTROL: a user can use this app if EITHER they're individually listed
+in ALLOWED_USERS, OR they belong to ANY of the groups listed in
+ALLOWED_GROUPS (a comma-separated list, e.g. "data-engineers,data-scientists,
+business-analysts,project-managers" -- the demo set is exactly this: four
+role-based groups, standing in for whatever real grouping the business
+settles on later. Adding/removing a role later is just editing this one list
+in app.yaml, no code change). See the "Access control" section of README.md
+for the one-time manual setup the group check requires (creating the groups,
+adding members, and granting the app's service principal permission to read
+group membership). The individual list needs no special permission at all --
+useful for letting yourself in while that permission grant is still pending,
+or for one-off access without touching group membership.
 """
 
 import os
@@ -22,7 +26,19 @@ import streamlit as st
 from databricks.sdk import WorkspaceClient
 
 SERVING_ENDPOINT_NAME = os.environ.get("SERVING_ENDPOINT_NAME", "news_qa_agent_endpoint")
-ALLOWED_GROUP_NAME = os.environ.get("ALLOWED_GROUP_NAME", "newsscan-agent-users")
+
+# Comma-separated list of group names -- membership in ANY ONE of these grants
+# access. Demo default: four role-based groups. Change freely later -- this is
+# the one place that needs editing to add/remove/rename which roles are allowed.
+ALLOWED_GROUPS = {
+    g.strip()
+    for g in os.environ.get(
+        "ALLOWED_GROUPS",
+        "data-engineers,data-scientists,business-analysts,project-managers",
+    ).split(",")
+    if g.strip()
+}
+
 # Comma-separated list of individual emails, e.g. "me@company.com, other@company.com"
 ALLOWED_USERS = {
     u.strip().lower()
@@ -44,30 +60,35 @@ def get_current_user_email():
     return st.context.headers.get("x-forwarded-email")
 
 
-def is_user_in_allowed_group(email: str, group_name: str) -> bool | None:
-    """Returns True/False, or None if the check itself failed (e.g. the app's
-    service principal doesn't have permission to read group membership --
-    see README for the permission grant this requires)."""
+def get_user_groups(email: str) -> set[str] | None:
+    """Returns the set of group names this user belongs to, or None if the
+    lookup itself failed (e.g. the app's service principal doesn't have
+    permission to read group membership yet -- see README)."""
     if not email:
-        return False
+        return set()
     w = get_workspace_client()
     try:
         matches = list(w.users.list(filter=f"userName eq '{email}'", attributes="id,userName,groups"))
         if not matches:
-            return False
-        user_groups = [g.display for g in (matches[0].groups or [])]
-        return group_name in user_groups
+            return set()
+        return {g.display for g in (matches[0].groups or [])}
     except Exception:
         return None
 
 
-def check_access(email: str) -> bool | None:
-    """Returns True (allowed), False (denied), or None (couldn't determine --
-    the group check failed and the user isn't individually allow-listed
-    either, so we genuinely don't know)."""
+def check_access(email: str) -> tuple[bool | None, set[str]]:
+    """Returns (True/False/None, matched_groups). None means the check
+    couldn't be completed (see get_user_groups) and the user also isn't
+    individually allow-listed, so we genuinely don't know."""
     if email.lower() in ALLOWED_USERS:
-        return True
-    return is_user_in_allowed_group(email, ALLOWED_GROUP_NAME)
+        return True, set()
+
+    user_groups = get_user_groups(email)
+    if user_groups is None:
+        return None, set()
+
+    matched = user_groups & ALLOWED_GROUPS
+    return (bool(matched), matched)
 
 
 # ---- Access control ----
@@ -77,7 +98,7 @@ if not user_email:
     st.error("🚫 Could not identify who you are. Access denied.")
     st.stop()
 
-access = check_access(user_email)
+access, matched_groups = check_access(user_email)
 
 if access is None:
     st.error(
@@ -92,7 +113,7 @@ if access is None:
 if access is False:
     st.error(
         f"🚫 Access denied. You must either be individually allow-listed or a "
-        f"member of the **{ALLOWED_GROUP_NAME}** group to use this agent."
+        f"member of one of these groups: {', '.join(sorted(ALLOWED_GROUPS))}."
         f"\n\nSigned in as: {user_email}"
     )
     st.stop()
@@ -100,7 +121,8 @@ if access is False:
 
 st.title("📰 NewsScan Agent")
 st.caption("Ask questions about the documents you've ingested. Answers are grounded in your documents, with sources.")
-st.caption(f"Signed in as {user_email}")
+role_note = f" ({', '.join(sorted(matched_groups))})" if matched_groups else ""
+st.caption(f"Signed in as {user_email}{role_note}")
 
 if "history" not in st.session_state:
     st.session_state.history = []
