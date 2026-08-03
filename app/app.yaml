@@ -8,4 +8,4 @@ env:
   - name: "ALLOWED_GROUP_NAME"
     value: "newsscan-agent-users"  # change to whatever group you actually want to gate access with
   - name: "ALLOWED_USERS"
-    value: ""  # comma-separated individual emails, e.g. "you@company.com,teammate@company.com" -- optional, works alongside the group check
+    value: "harsh.parmar@kadellabs.com"  # comma-separated individual emails, e.g. "you@company.com,teammate@company.com" -- optional, works alongside the group check
