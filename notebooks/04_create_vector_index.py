@@ -103,6 +103,17 @@ print(f"Indexed rows: {index.describe()['status'].get('indexed_row_count')}")
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ### Access-policy columns ride along for free
+# MAGIC `create_delta_sync_index` syncs the WHOLE source table (`gold_chunks`), not
+# MAGIC just the embedding column — so `policy_id`, `category`, and `viewer_groups`
+# MAGIC (added in notebooks 01-03) are already in the index. Nothing to change here;
+# MAGIC the agent (notebook 05/06) just needs to request them in its `columns=[...]`
+# MAGIC list at query time and filter by them — see the "role-based visibility" note
+# MAGIC there.
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ### To pick up newly chunked documents later
 # MAGIC Just re-run this whole notebook (Run All) any time after step 03 adds new
 # MAGIC rows — the cell above now detects the index already exists and triggers a

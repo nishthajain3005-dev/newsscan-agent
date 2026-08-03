@@ -65,9 +65,16 @@ silver_df = (
     .filter(col("text") != "")
     .withColumn("doc_id", sha2(col("path"), 256))
     .withColumn("title", col("path"))
-    .select("doc_id", "path", "title", "extension", "text", "ingestion_time")
+    .select(
+        "doc_id", "path", "title", "extension", "text", "ingestion_time",
+        "policy_id", "category", "viewer_groups",  # access-policy metadata, carried through from bronze
+    )
     .withColumn("parsed_time", current_timestamp())
 )
+
+# COMMAND ----------
+
+display(silver_df)
 
 # COMMAND ----------
 

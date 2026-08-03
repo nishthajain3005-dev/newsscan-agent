@@ -34,18 +34,37 @@ print(f"Deploying {registered_model_name}, version {model_version} (currently ta
 
 # COMMAND ----------
 
-from databricks import agents
+import mlflow.deployments
 
 serving_endpoint_name = "news_qa_agent_endpoint"
 
-deployment = agents.deploy(
-    model_name=registered_model_name,
-    model_version=model_version,
-    endpoint_name=serving_endpoint_name,
-    scale_to_zero=True,
-)
+deploy_client = mlflow.deployments.get_deploy_client("databricks")
 
-print(deployment)
+endpoint_config = {
+    "served_entities": [
+        {
+            "entity_name": registered_model_name,
+            "entity_version": str(model_version),
+            "workload_size": "Small",
+            "scale_to_zero_enabled": True,
+        }
+    ]
+}
+
+existing = None
+try:
+    existing = deploy_client.get_endpoint(endpoint=serving_endpoint_name)
+except Exception:
+    pass
+
+if existing:
+    print(f"Endpoint {serving_endpoint_name} already exists -- updating it to version {model_version}.")
+    result = deploy_client.update_endpoint(endpoint=serving_endpoint_name, config=endpoint_config)
+else:
+    print(f"Creating new endpoint {serving_endpoint_name}.")
+    result = deploy_client.create_endpoint(name=serving_endpoint_name, config=endpoint_config)
+
+print(result)
 
 # COMMAND ----------
 
@@ -74,7 +93,6 @@ print(deployment)
 
 # COMMAND ----------
 
-# Databricks notebook source
 # MAGIC %md
 # MAGIC # 06b — Deploy the agent as a serving endpoint
 # MAGIC Uses the `mlflow.deployments` SDK (the standard way to create/update a Model
@@ -113,6 +131,8 @@ print(f"Deploying {registered_model_name}, version {model_version} (currently ta
 # COMMAND ----------
 
 import mlflow.deployments
+import time
+from requests.exceptions import HTTPError
 
 deploy_client = mlflow.deployments.get_deploy_client("databricks")
 
@@ -133,14 +153,30 @@ try:
 except Exception:
     pass  # doesn't exist yet -- that's fine, we'll create it
 
-if existing:
-    print(f"Endpoint {serving_endpoint_name} already exists -- updating it to version {model_version}.")
-    result = deploy_client.update_endpoint(endpoint=serving_endpoint_name, config=endpoint_config)
-else:
-    print(f"Creating new endpoint {serving_endpoint_name}.")
-    result = deploy_client.create_endpoint(name=serving_endpoint_name, config=endpoint_config)
+max_retries = 5
+retry_delay = 30
 
-print(result)
+for attempt in range(max_retries):
+    try:
+        if existing:
+            print(f"Endpoint {serving_endpoint_name} already exists -- updating it to version {model_version}.")
+            result = deploy_client.update_endpoint(endpoint=serving_endpoint_name, config=endpoint_config)
+        else:
+            print(f"Creating new endpoint {serving_endpoint_name}.")
+            result = deploy_client.create_endpoint(name=serving_endpoint_name, config=endpoint_config)
+        print(result)
+        break
+    except HTTPError as e:
+        if "409" in str(e) and "currently being updated" in str(e):
+            if attempt < max_retries - 1:
+                print(f"Endpoint is currently being updated. Retrying in {retry_delay} seconds... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                print(f"Endpoint is still being updated after {max_retries} attempts. Please wait and try again later.")
+                raise
+        else:
+            raise
 
 # COMMAND ----------
 

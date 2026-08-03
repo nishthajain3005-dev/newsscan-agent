@@ -5,7 +5,17 @@ command: ["streamlit", "run", "app.py"]
 env:
   - name: "SERVING_ENDPOINT_NAME"
     value: "news_qa_agent_endpoint"
+  - name: "CHAT_MODEL_ENDPOINT"
+    value: "databricks-meta-llama-3-3-70b-instruct"  # used by the Upload tab to verify uploaded content matches a policy's allowed category (e.g. "is this actually a resume?")
   - name: "ALLOWED_GROUPS"
-    value: "data-engineers,data-scientists,business-analysts,project-managers"  # demo set -- membership in ANY one grants access; edit this list to change which roles are allowed later
+    value: "data-engineers,data-scientists,business-analysts,data-analysts,project-managers"  # demo set -- membership in ANY one grants access; edit this list to change which roles are allowed later
   - name: "ALLOWED_USERS"
     value: "nishthajain3005@gmail.com"  # comma-separated individual emails, e.g. "you@company.com,teammate@company.com" -- optional, works alongside the group check
+  - name: "CATALOG"
+    value: "news_agent"
+  - name: "SCHEMA"
+    value: "docs"
+  - name: "VOLUME"
+    value: "raw_files"
+  - name: "SQL_WAREHOUSE_ID"
+    value: ""  # REQUIRED for the Upload tab -- set to a SQL Warehouse ID (Compute > SQL Warehouses > your warehouse > Connection details), and grant this app's service principal "Can Use" on it. Upload tab shows a warning until this is set.

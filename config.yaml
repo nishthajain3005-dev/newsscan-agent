@@ -11,6 +11,21 @@ bronze_table: bronze_documents
 silver_table: silver_documents
 gold_table: gold_chunks
 
+# Document-level access policies (who can upload what, who can see it once ingested)
+policies_table: upload_policies
+manifest_table: upload_manifest
+
+# Role groups referenced by the seed policies in 00b_setup_access_policies.py.
+# "data-analysts" is new (added alongside the original 4) to distinctly represent
+# the "Data Analyst" role separately from "business-analysts" -- rename/remove
+# in 00b + app.yaml's ALLOWED_GROUPS if your org uses different group names.
+all_role_groups:
+  - data-engineers
+  - data-scientists
+  - business-analysts
+  - data-analysts
+  - project-managers
+
 vector_search_endpoint: news_agent_vs_endpoint
 vector_index_name: gold_chunks_index
 

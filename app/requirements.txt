@@ -4,10 +4,9 @@
 # (see notebooks/02, 03, 04, 05, 06). Use this file only if you want to install
 # everything at once for local testing, or add these as an Environment spec
 # under the notebook's "Environment" side panel instead of %pip cells.
-databricks-vectorsearch>=0.40
-mlflow>=2.16.0
-langchain>=0.2.16
-databricks-langchain>=0.1.0
+streamlit>=1.37.0
+databricks-sdk>=0.29.0
 pymupdf>=1.24.0
+python-docx>=1.1.0
 beautifulsoup4>=4.12.3
 pyyaml>=6.0.1

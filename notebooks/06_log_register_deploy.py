@@ -24,6 +24,7 @@ chat_model_endpoint = "databricks-meta-llama-3-3-70b-instruct"  # <- must match 
 vs_endpoint = "news_agent_vs_endpoint"
 vs_index_name = "news_agent.docs.gold_chunks_index"
 NUM_RESULTS = 5
+OVER_FETCH_MULTIPLIER = 4  # fetch this many x NUM_RESULTS candidates before filtering by viewer_groups
 
 # COMMAND ----------
 
@@ -31,7 +32,8 @@ import mlflow
 
 
 class NewsQAAgent(mlflow.pyfunc.PythonModel):
-    """Retrieval-augmented Q&A agent over the ingested documents.
+    """Retrieval-augmented Q&A agent over the ingested documents, with
+    role-based filtering of which chunks a given asker is allowed to see.
     (Same definition as notebook 05 — kept in sync manually; see the note above
     for why this isn't shared via %run.)"""
 
@@ -43,26 +45,32 @@ class NewsQAAgent(mlflow.pyfunc.PythonModel):
         self.index = self.vsc.get_index(endpoint_name=vs_endpoint, index_name=vs_index_name)
         self.llm = ChatDatabricks(endpoint=chat_model_endpoint, max_tokens=1000, temperature=0.1)
 
-    def _retrieve(self, question):
+    def _retrieve(self, question, user_groups):
+        num_candidates = NUM_RESULTS * OVER_FETCH_MULTIPLIER if user_groups else NUM_RESULTS
         results = self.index.similarity_search(
             query_text=question,
-            columns=["chunk_text", "path", "title"],
-            num_results=NUM_RESULTS,
+            columns=["chunk_text", "path", "title", "category", "viewer_groups"],
+            num_results=num_candidates,
         )
         rows = results.get("result", {}).get("data_array", [])
-        return rows
 
-    def _answer_one(self, question):
-        rows = self._retrieve(question)
+        if user_groups:
+            user_group_set = set(user_groups)
+            rows = [r for r in rows if user_group_set & set(r[4] or [])]
+
+        return rows[:NUM_RESULTS]
+
+    def _answer_one(self, question, user_groups):
+        rows = self._retrieve(question, user_groups)
         if not rows:
             return {
-                "answer": "I couldn't find anything about that in the ingested documents.",
+                "answer": "I couldn't find anything about that in the documents you have access to.",
                 "sources": [],
             }
 
         context_block = "\n\n".join(f"[Source: {r[2]}]\n{r[0]}" for r in rows)
-        prompt = f"""You are a research assistant answering questions using ONLY the newspaper
-article excerpts below. If the excerpts don't contain the answer, say you don't know —
+        prompt = f"""You are a research assistant answering questions using ONLY the document
+excerpts below. If the excerpts don't contain the answer, say you don't know —
 do not make anything up. Answer in clear, plain, human-friendly language (a few sentences,
 not bullet points, unless the question asks for a list). End with the source titles you used.
 
@@ -79,7 +87,16 @@ Question: {question}
 
     def predict(self, context, model_input):
         questions = model_input["question"].tolist()
-        return [self._answer_one(q) for q in questions]
+        if "user_groups" in model_input.columns:
+            groups_col = model_input["user_groups"].fillna("").tolist()
+        else:
+            groups_col = [""] * len(questions)
+
+        results = []
+        for q, groups_str in zip(questions, groups_col):
+            user_groups = [g.strip() for g in groups_str.split(",") if g.strip()]
+            results.append(self._answer_one(q, user_groups))
+        return results
 
 # COMMAND ----------
 
@@ -92,7 +109,11 @@ mlflow.set_registry_uri("databricks-uc")
 
 registered_model_name = "news_agent.docs.news_qa_agent"
 
-input_schema = Schema([ColSpec("string", "question")])
+# "user_groups" is a comma-separated string of the asking user's Databricks
+# group names (e.g. "data-engineers,project-managers"). Empty string = no
+# role-based filtering (used by ad-hoc notebook testing in 07). The app
+# ALWAYS sends the caller's real groups -- see app/app.py's ask_agent().
+input_schema = Schema([ColSpec("string", "question"), ColSpec("string", "user_groups")])
 output_schema = Schema([ColSpec("string", "answer"), ColSpec("string", "sources")])
 signature = ModelSignature(inputs=input_schema, outputs=output_schema)
 
@@ -114,7 +135,10 @@ with mlflow.start_run(run_name="news_qa_agent"):
         artifact_path="agent",
         python_model=NewsQAAgent(),
         signature=signature,
-        input_example=pd.DataFrame({"question": ["What happened in the latest article?"]}),
+        input_example=pd.DataFrame({
+            "question": ["What happened in the latest article?"],
+            "user_groups": ["data-engineers,project-managers"],
+        }),
         pip_requirements=[
             "mlflow",
             "databricks-vectorsearch",
