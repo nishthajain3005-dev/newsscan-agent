@@ -1,12 +1,12 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 02 — Parse raw bytes into clean plain text (Silver table)
-# MAGIC Turns PDF/HTML/TXT bytes into readable text. Skips files it already parsed
-# MAGIC (based on path), so it's safe to re-run.
+# MAGIC Turns PDF/HTML/TXT/DOCX bytes into readable text. Skips files it already
+# MAGIC parsed (based on path), so it's safe to re-run.
 
 # COMMAND ----------
 
-# MAGIC %pip install pymupdf beautifulsoup4 -q
+# MAGIC %pip install pymupdf beautifulsoup4 python-docx -q
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -29,6 +29,7 @@ def extract_text(content, extension):
     try:
         if extension == "pdf":
             import fitz  # PyMuPDF
+            print("true pdf")
             doc = fitz.open(stream=bytes(content), filetype="pdf")
             text = "\n".join(page.get_text() for page in doc)
         elif extension in ("html", "htm"):
@@ -39,6 +40,11 @@ def extract_text(content, extension):
             text = soup.get_text(separator="\n")
         elif extension == "txt":
             text = bytes(content).decode("utf-8", errors="ignore")
+        elif extension == "docx":
+            import io
+            import docx
+            doc = docx.Document(io.BytesIO(bytes(content)))
+            text = "\n".join(p.text for p in doc.paragraphs)
         else:
             text = ""
     except Exception:
@@ -71,10 +77,6 @@ silver_df = (
     )
     .withColumn("parsed_time", current_timestamp())
 )
-
-# COMMAND ----------
-
-display(silver_df)
 
 # COMMAND ----------
 

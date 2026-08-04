@@ -30,6 +30,14 @@ notebooks/00b_setup_access_policies.py) and are read live on every visit -- no
 redeploy needed to add/edit a policy. See the README's "Document-level upload
 policies" section for the one-time SQL Warehouse permission grant this tab
 needs.
+
+ADMIN "MANAGE" TAB: visible only to accounts listed in ADMIN_USERS (separate
+from ALLOWED_USERS -- everyone in ALLOWED_USERS can use the app, only
+ADMIN_USERS get admin capabilities). Lets an admin edit/create policies
+without writing SQL, and re-tag documents that were already ingested BEFORE a
+policy's viewer_groups changed (editing the policy table alone only affects
+FUTURE uploads -- see README "Re-tagging already-ingested documents"), then
+triggers a vector index resync so the change is queryable immediately.
 """
 
 import io
@@ -49,6 +57,33 @@ SCHEMA = os.environ.get("SCHEMA", "docs")
 VOLUME = os.environ.get("VOLUME", "raw_files")
 POLICIES_TABLE = f"{CATALOG}.{SCHEMA}.upload_policies"
 MANIFEST_TABLE = f"{CATALOG}.{SCHEMA}.upload_manifest"
+BRONZE_TABLE = f"{CATALOG}.{SCHEMA}.bronze_documents"
+SILVER_TABLE = f"{CATALOG}.{SCHEMA}.silver_documents"
+GOLD_TABLE = f"{CATALOG}.{SCHEMA}.gold_chunks"
+
+VS_ENDPOINT = os.environ.get("VS_ENDPOINT", "news_agent_vs_endpoint")
+VS_INDEX_NAME = os.environ.get("VS_INDEX_NAME", f"{CATALOG}.{SCHEMA}.gold_chunks_index")
+
+# Comma-separated list of role-group names offered as checkboxes when
+# editing/creating a policy's uploader_groups / viewer_groups in the Manage tab.
+ALL_ROLE_GROUPS = [
+    g.strip()
+    for g in os.environ.get(
+        "ALL_ROLE_GROUPS",
+        "data-engineers,data-scientists,business-analysts,data-analysts,project-managers",
+    ).split(",")
+    if g.strip()
+]
+
+# Comma-separated list of individual emails allowed to see/use the "Manage"
+# tab (edit policies, re-tag already-ingested documents, trigger reindex).
+# Deliberately separate from ALLOWED_USERS -- everyone in ALLOWED_USERS can
+# use the app, but only these accounts get admin capabilities.
+ADMIN_USERS = {
+    u.strip().lower()
+    for u in os.environ.get("ADMIN_USERS", "").split(",")
+    if u.strip()
+}
 
 # Comma-separated list of group names -- membership in ANY ONE of these grants
 # access. Demo default: five role-based groups. Change freely later -- this is
@@ -134,20 +169,57 @@ def get_current_user_email():
     return st.context.headers.get("x-forwarded-email")
 
 
-def get_user_groups(email: str) -> set[str] | None:
-    """Returns the set of group names this user belongs to, or None if the
-    lookup itself failed (e.g. the app's service principal doesn't have
-    permission to read group membership yet -- see README)."""
+def get_user_groups(email: str) -> tuple[set[str] | None, dict]:
+    """Returns (group_names_or_None, debug_info). group_names is None only if
+    the lookup itself errored (e.g. missing SCIM permission -- see README
+    step 23). If the lookup succeeds but finds no matching user, that's
+    reported in debug_info rather than silently treated the same as
+    "verified to have zero groups" -- a userName/email mismatch (common with
+    some SSO setups) looks identical to "not in any group" unless you can see
+    the raw match count, which is why this now surfaces it."""
     if not email:
-        return set()
+        return set(), {"matches_found": 0, "note": "no email"}
+
     w = get_workspace_client()
+    debug_info = {"queries_tried": []}
+
+    for filt in (
+        f"userName eq '{email}'",
+        f"userName eq '{email.lower()}'",
+    ):
+        try:
+            matches = list(w.users.list(filter=filt, attributes="id,userName,groups"))
+            debug_info["queries_tried"].append({"filter": filt, "matches": len(matches)})
+            if matches:
+                found_username = matches[0].user_name
+                groups = {g.display for g in (matches[0].groups or [])}
+                debug_info["matched_username"] = found_username
+                debug_info["groups_found"] = sorted(groups)
+                return groups, debug_info
+        except Exception as e:
+            debug_info["error"] = str(e)
+            return None, debug_info
+
+    # No exact match on either casing -- last resort: narrow by the local
+    # part of the email (SCIM "contains") and compare client-side, in case
+    # userName differs from email in some other way (whitespace, etc.).
+    local_part = email.split("@")[0]
     try:
-        matches = list(w.users.list(filter=f"userName eq '{email}'", attributes="id,userName,groups"))
-        if not matches:
-            return set()
-        return {g.display for g in (matches[0].groups or [])}
-    except Exception:
-        return None
+        candidates = list(w.users.list(filter=f"userName co '{local_part}'", attributes="id,userName,groups"))
+        debug_info["queries_tried"].append({"filter": f"userName co '{local_part}'", "matches": len(candidates)})
+        debug_info["candidate_usernames"] = [c.user_name for c in candidates]
+        for c in candidates:
+            if (c.user_name or "").strip().lower() == email.strip().lower():
+                groups = {g.display for g in (c.groups or [])}
+                debug_info["matched_username"] = c.user_name
+                debug_info["groups_found"] = sorted(groups)
+                return groups, debug_info
+    except Exception as e:
+        debug_info["error"] = str(e)
+        return None, debug_info
+
+    debug_info["note"] = "No Databricks user found whose userName matches this email in any form tried."
+    return set(), debug_info
 
 
 def get_eligible_policies(user_groups: set[str], is_individually_allowed: bool):
@@ -262,19 +334,90 @@ def log_rejected_upload(file_name: str, policy: dict, uploaded_by: str, reason: 
         pass
 
 
-def check_access(email: str) -> tuple[bool | None, set[str]]:
-    """Returns (True/False/None, matched_groups). None means the check
-    couldn't be completed (see get_user_groups) and the user also isn't
+# ---- Admin ("Manage" tab) helpers ----
+
+def get_all_policies():
+    """All policies (active or not) -- for the admin editor, unlike
+    get_eligible_policies() which is what uploaders see."""
+    return run_query(f"SELECT * FROM {POLICIES_TABLE} ORDER BY policy_id")
+
+
+def update_policy(policy_id: str, fields: dict):
+    """fields: display_name, description (str); allowed_categories,
+    allowed_extensions, uploader_groups, viewer_groups (list[str]);
+    require_content_check, active (bool)."""
+    set_clauses = []
+    for key in ("display_name", "description"):
+        if key in fields:
+            set_clauses.append(f"{key} = {sql_string_literal(fields[key])}")
+    for key in ("allowed_categories", "allowed_extensions", "uploader_groups", "viewer_groups"):
+        if key in fields:
+            set_clauses.append(f"{key} = {sql_array_literal(fields[key])}")
+    for key in ("require_content_check", "active"):
+        if key in fields:
+            set_clauses.append(f"{key} = {'true' if fields[key] else 'false'}")
+    if not set_clauses:
+        return
+    run_statement(f"UPDATE {POLICIES_TABLE} SET {', '.join(set_clauses)} WHERE policy_id = {sql_string_literal(policy_id)}")
+
+
+def insert_policy(policy_id: str, fields: dict, created_by: str):
+    run_statement(f"""
+        INSERT INTO {POLICIES_TABLE}
+        (policy_id, display_name, description, allowed_categories, allowed_extensions, uploader_groups, viewer_groups, require_content_check, active, created_by, created_at)
+        VALUES (
+            {sql_string_literal(policy_id)}, {sql_string_literal(fields.get('display_name', ''))}, {sql_string_literal(fields.get('description', ''))},
+            {sql_array_literal(fields.get('allowed_categories', []))}, {sql_array_literal(fields.get('allowed_extensions', []))},
+            {sql_array_literal(fields.get('uploader_groups', []))}, {sql_array_literal(fields.get('viewer_groups', []))},
+            {'true' if fields.get('require_content_check') else 'false'}, {'true' if fields.get('active', True) else 'false'},
+            {sql_string_literal(created_by)}, current_timestamp()
+        )
+    """)
+
+
+def retag_documents(policy_id: str, new_viewer_groups: list[str]):
+    """Updates viewer_groups on every already-ingested row (bronze, silver,
+    gold) tagged with this policy_id -- needed because editing the policy
+    table alone only changes what happens to FUTURE uploads. Returns the
+    number of gold_chunks rows affected (used to warn if nothing matched)."""
+    new_array = sql_array_literal(new_viewer_groups)
+    pid = sql_string_literal(policy_id)
+
+    run_statement(f"UPDATE {BRONZE_TABLE} SET viewer_groups = {new_array} WHERE policy_id = {pid}")
+    run_statement(f"UPDATE {SILVER_TABLE} SET viewer_groups = {new_array} WHERE policy_id = {pid}")
+    run_statement(f"UPDATE {GOLD_TABLE} SET viewer_groups = {new_array} WHERE policy_id = {pid}")
+
+    affected = run_query(f"SELECT count(*) as n FROM {GOLD_TABLE} WHERE policy_id = {pid}")
+    return int(affected[0]["n"]) if affected else 0
+
+
+def trigger_vector_index_resync():
+    """Vector Search uses TRIGGERED sync -- edits to gold_chunks (including
+    the retag above) are invisible to queries until a sync is explicitly
+    triggered. Requires the app's service principal to have query/manage
+    permission on the vector search endpoint -- same class of grant as step
+    17 in the README, but for the vector search endpoint instead of the
+    serving endpoint."""
+    from databricks.vector_search.client import VectorSearchClient
+
+    vsc = VectorSearchClient(disable_notice=True)
+    index = vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=VS_INDEX_NAME)
+    index.sync()
+
+
+def check_access(email: str) -> tuple[bool | None, set[str], dict]:
+    """Returns (True/False/None, matched_groups, debug_info). None means the
+    check couldn't be completed (see get_user_groups) and the user also isn't
     individually allow-listed, so we genuinely don't know."""
     if email.lower() in ALLOWED_USERS:
-        return True, set()
+        return True, set(), {"note": "individually allow-listed, group lookup skipped"}
 
-    user_groups = get_user_groups(email)
+    user_groups, debug_info = get_user_groups(email)
     if user_groups is None:
-        return None, set()
+        return None, set(), debug_info
 
     matched = user_groups & ALLOWED_GROUPS
-    return (bool(matched), matched)
+    return (bool(matched), matched, debug_info)
 
 
 # ---- Access control ----
@@ -284,7 +427,7 @@ if not user_email:
     st.error("🚫 Could not identify who you are. Access denied.")
     st.stop()
 
-access, matched_groups = check_access(user_email)
+access, matched_groups, access_debug = check_access(user_email)
 
 if access is None:
     st.error(
@@ -294,6 +437,8 @@ if access is None:
         "service principal a role with SCIM read access), or ask an admin to "
         "add your email to ALLOWED_USERS in app.yaml as a quick workaround."
     )
+    with st.expander("Diagnostic details (for whoever's troubleshooting this)"):
+        st.json(access_debug)
     st.stop()
 
 if access is False:
@@ -302,27 +447,61 @@ if access is False:
         f"member of one of these groups: {', '.join(sorted(ALLOWED_GROUPS))}."
         f"\n\nSigned in as: {user_email}"
     )
+    with st.expander("Diagnostic details (for whoever's troubleshooting this)"):
+        st.caption(
+            "If you're confident you ARE a member of one of the groups above, this usually "
+            "means the SCIM lookup couldn't match your Databricks `userName` to your login "
+            "email — check `matched_username` / `candidate_usernames` below against your "
+            "actual Databricks username (Admin Settings > Users)."
+        )
+        st.json(access_debug)
     st.stop()
 # ---- End access control ----
 
 st.title("📰 NewsScan Agent")
 role_note = f" ({', '.join(sorted(matched_groups))})" if matched_groups else ""
-st.caption(f"Signed in as {user_email}{role_note}")
 
 # Full group membership (may be a superset of matched_groups, which is only
 # the intersection with ALLOWED_GROUPS) -- this is what's sent to the agent
 # for role-based document filtering, and what's checked against each upload
-# policy's uploader_groups.
-_full_groups = get_user_groups(user_email)
+# policy's uploader_groups. Shown to the user directly below so it's obvious
+# WHY they can/can't see a given document, instead of them having to guess.
+# NOTE: this is looked up fresh even for individually-allow-listed users --
+# ALLOWED_USERS only bypasses the APP-ACCESS check, never document-visibility
+# filtering, which always uses real group membership.
+_full_groups, _full_groups_debug = get_user_groups(user_email)
 user_full_groups = _full_groups if _full_groups is not None else matched_groups
 is_individually_allowed = user_email.lower() in ALLOWED_USERS
+is_admin = user_email.lower() in ADMIN_USERS
+
+st.caption(f"Signed in as {user_email}{role_note}")
+if _full_groups is None:
+    st.caption(
+        f"⚠️ Couldn't verify your full group membership (SCIM read permission not "
+        f"granted to the app yet — see README step 23) — falling back to "
+        f"`{', '.join(sorted(user_full_groups)) or '(none)'}` for document access filtering. "
+        f"This may be narrower than your real groups."
+    )
+elif not _full_groups:
+    st.caption(
+        "⚠️ No groups detected for document access — you'll only see documents tagged "
+        "open to everyone. If you expect to be in a specific group, expand diagnostics below."
+    )
+    with st.expander("Diagnostic details"):
+        st.json(_full_groups_debug)
+else:
+    st.caption(f"Groups used for document access: `{', '.join(sorted(user_full_groups))}`")
 
 if "history" not in st.session_state:
     st.session_state.history = []
 
 w = get_workspace_client()
 
-ask_tab, upload_tab = st.tabs(["💬 Ask", "📤 Upload"])
+if is_admin:
+    ask_tab, upload_tab, manage_tab = st.tabs(["💬 Ask", "📤 Upload", "⚙️ Manage"])
+else:
+    ask_tab, upload_tab = st.tabs(["💬 Ask", "📤 Upload"])
+    manage_tab = None
 
 
 def ask_agent(question: str):
@@ -458,3 +637,132 @@ with upload_tab:
                         )
                     except Exception as e:
                         st.error(f"Upload failed: {e}")
+
+
+if manage_tab is not None:
+    with manage_tab:
+        st.caption(
+            "Admin-only. Edit existing policies, add new ones, and re-tag documents that were "
+            "already ingested before a policy changed (editing a policy alone only affects "
+            "future uploads)."
+        )
+
+        if not SQL_WAREHOUSE_ID:
+            st.warning("⚠️ `SQL_WAREHOUSE_ID` isn't set in app.yaml — see README \"Document-level upload policies\".")
+        else:
+            edit_tab, new_tab, retag_tab = st.tabs(["Edit policies", "New policy", "Re-tag existing documents"])
+
+            try:
+                all_policies = get_all_policies()
+            except Exception as e:
+                all_policies = []
+                st.error(f"Couldn't load policies: {e}")
+
+            # ---- Edit existing policy ----
+            with edit_tab:
+                if not all_policies:
+                    st.info("No policies yet — create one in the 'New policy' tab.")
+                else:
+                    edit_labels = {p["policy_id"]: p["display_name"] for p in all_policies}
+                    edit_id = st.selectbox("Policy", options=list(edit_labels.keys()), format_func=lambda pid: edit_labels[pid], key="edit_policy_select")
+                    p = next(x for x in all_policies if x["policy_id"] == edit_id)
+
+                    with st.form(f"edit_form_{edit_id}"):
+                        display_name = st.text_input("Display name", value=p.get("display_name") or "")
+                        description = st.text_area("Description", value=p.get("description") or "")
+                        allowed_categories = st.text_input("Allowed categories (comma-separated)", value=", ".join(parse_sql_array(p.get("allowed_categories"))))
+                        allowed_extensions = st.text_input("Allowed file extensions (comma-separated, no dots)", value=", ".join(parse_sql_array(p.get("allowed_extensions"))))
+                        uploader_groups = st.multiselect("Who can upload (uploader_groups)", options=ALL_ROLE_GROUPS, default=[g for g in parse_sql_array(p.get("uploader_groups")) if g in ALL_ROLE_GROUPS])
+                        viewer_groups = st.multiselect("Who can view/query (viewer_groups)", options=ALL_ROLE_GROUPS, default=[g for g in parse_sql_array(p.get("viewer_groups")) if g in ALL_ROLE_GROUPS])
+                        require_content_check = st.checkbox("Require content check (LLM verifies uploaded content matches allowed categories)", value=bool(p.get("require_content_check")))
+                        active = st.checkbox("Active (shown to uploaders)", value=bool(p.get("active")))
+
+                        if st.form_submit_button("Save policy"):
+                            update_policy(edit_id, {
+                                "display_name": display_name,
+                                "description": description,
+                                "allowed_categories": [c.strip() for c in allowed_categories.split(",") if c.strip()],
+                                "allowed_extensions": [e.strip().lstrip(".") for e in allowed_extensions.split(",") if e.strip()],
+                                "uploader_groups": uploader_groups,
+                                "viewer_groups": viewer_groups,
+                                "require_content_check": require_content_check,
+                                "active": active,
+                            })
+                            st.success(
+                                f"Saved '{edit_id}'. This only affects FUTURE uploads under this policy — "
+                                f"use the 'Re-tag existing documents' tab to also update already-ingested files."
+                            )
+                            st.rerun()
+
+            # ---- Create new policy ----
+            with new_tab:
+                with st.form("new_policy_form"):
+                    new_id = st.text_input("Policy ID (unique, e.g. 'contracts_legal_only')")
+                    new_display_name = st.text_input("Display name")
+                    new_description = st.text_area("Description")
+                    new_allowed_categories = st.text_input("Allowed categories (comma-separated)", value="general")
+                    new_allowed_extensions = st.text_input("Allowed file extensions (comma-separated, no dots)", value="pdf")
+                    new_uploader_groups = st.multiselect("Who can upload (uploader_groups)", options=ALL_ROLE_GROUPS)
+                    new_viewer_groups = st.multiselect("Who can view/query (viewer_groups)", options=ALL_ROLE_GROUPS)
+                    new_require_content_check = st.checkbox("Require content check", value=False)
+
+                    if st.form_submit_button("Create policy"):
+                        existing_ids = {p["policy_id"] for p in all_policies}
+                        if not new_id.strip():
+                            st.error("Policy ID is required.")
+                        elif new_id.strip() in existing_ids:
+                            st.error(f"Policy ID '{new_id}' already exists — edit it instead, or pick a different ID.")
+                        else:
+                            insert_policy(new_id.strip(), {
+                                "display_name": new_display_name,
+                                "description": new_description,
+                                "allowed_categories": [c.strip() for c in new_allowed_categories.split(",") if c.strip()],
+                                "allowed_extensions": [e.strip().lstrip(".") for e in new_allowed_extensions.split(",") if e.strip()],
+                                "uploader_groups": new_uploader_groups,
+                                "viewer_groups": new_viewer_groups,
+                                "require_content_check": new_require_content_check,
+                                "active": True,
+                            }, user_email)
+                            st.success(f"Created policy '{new_id}'. It'll show up for eligible uploaders immediately.")
+                            st.rerun()
+
+            # ---- Re-tag already-ingested documents + trigger reindex ----
+            with retag_tab:
+                st.markdown(
+                    "Updates `viewer_groups` on every already-ingested document (bronze, silver, "
+                    "and gold tables) tagged with a given policy, then triggers a vector index "
+                    "resync — so the change is queryable within a few minutes, without waiting for "
+                    "the next scheduled ingestion run."
+                )
+                if not all_policies:
+                    st.info("No policies yet.")
+                else:
+                    retag_labels = {p["policy_id"]: p["display_name"] for p in all_policies}
+                    retag_id = st.selectbox("Policy", options=list(retag_labels.keys()), format_func=lambda pid: retag_labels[pid], key="retag_policy_select")
+                    rp = next(x for x in all_policies if x["policy_id"] == retag_id)
+                    current_viewer_groups = parse_sql_array(rp.get("viewer_groups"))
+                    st.caption(f"Policy's current `viewer_groups`: `{', '.join(current_viewer_groups) or '(none)'}`")
+
+                    retag_groups = st.multiselect(
+                        "New viewer_groups to apply to already-ingested documents under this policy",
+                        options=ALL_ROLE_GROUPS,
+                        default=current_viewer_groups,
+                        key=f"retag_groups_{retag_id}",
+                    )
+
+                    if st.button("Re-tag documents + trigger reindex", key=f"retag_btn_{retag_id}"):
+                        try:
+                            with st.spinner("Updating bronze/silver/gold tables..."):
+                                affected = retag_documents(retag_id, retag_groups)
+                            if affected == 0:
+                                st.warning(f"No ingested documents currently have policy_id = '{retag_id}' — nothing to re-tag yet.")
+                            else:
+                                with st.spinner("Triggering vector index resync..."):
+                                    trigger_vector_index_resync()
+                                st.success(
+                                    f"✅ Re-tagged {affected} document(s) and triggered a reindex. "
+                                    f"Changes are typically queryable within a few minutes — check "
+                                    f"Serving > vector search index status if it takes longer."
+                                )
+                        except Exception as e:
+                            st.error(f"Re-tag/reindex failed: {e}")

@@ -6,6 +6,7 @@
 # under the notebook's "Environment" side panel instead of %pip cells.
 streamlit>=1.37.0
 databricks-sdk>=0.29.0
+databricks-vectorsearch>=0.40
 pymupdf>=1.24.0
 python-docx>=1.1.0
 beautifulsoup4>=4.12.3

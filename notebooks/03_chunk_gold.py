@@ -46,7 +46,6 @@ new_docs = silver_df.filter(~col("doc_id").isin(already_chunked)) if already_chu
 
 gold_df = (
     new_docs
-    .select("doc_id", "path", "title", "text", "policy_id", "category", "viewer_groups")
     .withColumn("chunk_text", explode(split_udf(col("text"))))
     .withColumn("chunk_id", sha2(concat_ws("||", col("doc_id"), col("chunk_text")), 256))
     .withColumn("chunked_time", current_timestamp())

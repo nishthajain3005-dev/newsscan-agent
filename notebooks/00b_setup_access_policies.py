@@ -137,8 +137,3 @@ display(spark.table(policies_table))
 # MAGIC   live) -- see README step "Grant the app a SQL Warehouse".
 # MAGIC - Then use the app's **Upload** tab instead of dragging files straight into
 # MAGIC   the Volume -- that's what actually applies these policies.
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC select * from news_agent.docs.upload_policies

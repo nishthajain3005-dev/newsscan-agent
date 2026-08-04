@@ -48,7 +48,7 @@ ask("Summarize the resume that was uploaded.", user_groups="project-managers")
 
 # COMMAND ----------
 
-ask("Summarize the resume that was uploaded.", user_groups="data-engineers")
+ask("Summarize the resume that was uploaded.", user_groups="data-analysts")
 
 # COMMAND ----------
 

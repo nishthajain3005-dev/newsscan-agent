@@ -196,9 +196,25 @@ code change needed to add a new policy or tweak an existing one.
 - The next ingestion run (steps 01-04, or the scheduled job) carries `policy_id` / `category` / `viewer_groups` through bronze → silver → gold → the vector index.
 - The agent (notebook 05/06) now takes the asking user's groups as a second input and drops any retrieved chunk whose `viewer_groups` doesn't overlap them — so a resume tagged `viewer_groups=[data-engineers, data-analysts]` never appears in an answer to a Project Manager or Business Analyst, even if it's the closest semantic match to their question.
 
-**Adding a new policy later** (e.g. "only Data Scientists can upload training data, visible only to Data Scientists + Data Engineers"): just `INSERT` a row into `upload_policies` — no redeploy, no notebook re-run. It shows up in the Upload tab on next page load.
+**Adding a new policy later** (e.g. "only Data Scientists can upload training data, visible only to Data Scientists + Data Engineers"): use the Manage tab below (recommended), or just `INSERT` a row into `upload_policies` directly — no redeploy, no notebook re-run. It shows up in the Upload tab on next page load.
 
 **Note on the security model:** this is application-layer enforcement (the app and the agent check group membership before showing content), not Unity Catalog row-level security on the underlying files — anyone with direct Catalog Explorer / `dbutils.fs` access to the Volume or the Delta tables can still see everything, same as any other UC object with standard grants. If you need the raw files themselves locked down per-role (not just "don't surface this in chat answers"), put restricted-content policies in their own schema/Volume with UC-level grants restricting who can even browse it, in addition to this feature.
+
+### The admin "Manage" tab (edit policies without SQL)
+
+A third tab, **⚙️ Manage**, is visible only to accounts listed in `ADMIN_USERS` in `app.yaml` (comma-separated emails — separate from `ALLOWED_USERS`; being in `ALLOWED_USERS` only grants normal app access, not admin capabilities). It has three sections:
+
+- **Edit policies** — change any policy's `display_name`, `description`, `allowed_categories`, `allowed_extensions`, `uploader_groups`, `viewer_groups`, `require_content_check`, `active` from a form. Writes straight to `upload_policies`.
+- **New policy** — create a policy from a form instead of a notebook `INSERT`.
+- **Re-tag existing documents** — this is the one to reach for after editing a policy's `viewer_groups`. **Editing the policy table alone only changes what happens to *future* uploads** — it does NOT change documents already sitting in `bronze_documents` / `silver_documents` / `gold_chunks`, since those carry their own `viewer_groups` copied at ingestion time. This section runs the equivalent of:
+  ```sql
+  UPDATE bronze_documents SET viewer_groups = array(...) WHERE policy_id = '...';
+  UPDATE silver_documents SET viewer_groups = array(...) WHERE policy_id = '...';
+  UPDATE gold_chunks       SET viewer_groups = array(...) WHERE policy_id = '...';
+  ```
+  and then triggers a vector index resync (equivalent to re-running notebook `04`), so the change is queryable within a few minutes instead of waiting for the next scheduled ingestion run.
+
+**One extra permission needed for the "re-tag + reindex" button specifically:** the app's service principal needs permission to trigger a sync on the vector search index — grant it the same way as step 17 (Serving endpoint permission), but on the **vector search endpoint** (`news_agent_vs_endpoint`) instead: left sidebar → **Compute** → **Vector Search** → your endpoint → grant the app's service principal permission to manage/sync the index. Without this, the re-tag itself succeeds but the reindex step fails — the tab will tell you this explicitly rather than failing silently.
 
 ### After the first run
 Steps 4–7 (and the job in step 13) are all designed to be safe to re-run — they only process files/documents/chunks that are new since last time, so day-to-day you just drop new files in the volume and either wait for the schedule or manually trigger the job. Because everything is serverless, there's also no cluster sitting around costing you money between runs — compute only exists for the seconds/minutes each step actually takes.
@@ -216,3 +232,4 @@ Steps 4–7 (and the job in step 13) are all designed to be safe to re-run — t
 - **Upload tab shows "Couldn't load upload policies"**: almost always `SQL_WAREHOUSE_ID` isn't set in `app.yaml`, or it's set but the app's service principal doesn't have "Can Use" on that warehouse yet — see "Document-level upload policies" step 27.
 - **Upload rejects a file that looks correct**: if it's a content-check rejection, the model's classification is shown in the error/manifest row (`rejection_reason`) — check `upload_manifest` for the exact reply; the extraction step can also return empty text for scanned/image-only PDFs (same limitation noted above for the main pipeline), which fails closed (rejected) rather than silently letting it through.
 - **A file uploaded through the app never shows up in answers**: uploading only writes to the Volume + manifest — it still needs the next ingestion run (steps 01-04, or the scheduled job) to actually get parsed, chunked, and synced into the vector index.
+- **A `.docx` upload (e.g. a resume) never shows up in answers, no matter what `viewer_groups` says**: `02_parse_clean_silver.py` extracts text per file extension — if the extension it saw isn't one it knows how to parse, `extract_text()` returns `''`, and that document is silently dropped before silver (`.filter(col("text") != "")`), so it never reaches gold or the vector index at all. This project now handles `pdf`/`html`/`htm`/`txt`/`docx`; if you add a policy that allows a new extension (e.g. `.pptx`), add a matching extraction branch in `02_parse_clean_silver.py` too, or uploads under that extension will pass validation but silently vanish from the pipeline.

@@ -10,7 +10,7 @@ env:
   - name: "ALLOWED_GROUPS"
     value: "data-engineers,data-scientists,business-analysts,data-analysts,project-managers"  # demo set -- membership in ANY one grants access; edit this list to change which roles are allowed later
   - name: "ALLOWED_USERS"
-    value: ""  # comma-separated individual emails, e.g. "you@company.com,teammate@company.com" -- optional, works alongside the group check
+    value: "nishthajain3005@gmail.com"  # comma-separated individual emails, e.g. "you@company.com,teammate@company.com" -- optional, works alongside the group check
   - name: "CATALOG"
     value: "news_agent"
   - name: "SCHEMA"
@@ -18,4 +18,12 @@ env:
   - name: "VOLUME"
     value: "raw_files"
   - name: "SQL_WAREHOUSE_ID"
-    value: "fa0acbb90f64cabc"  # REQUIRED for the Upload tab -- set to a SQL Warehouse ID (Compute > SQL Warehouses > your warehouse > Connection details), and grant this app's service principal "Can Use" on it. Upload tab shows a warning until this is set.
+    value: ""  # REQUIRED for the Upload tab -- set to a SQL Warehouse ID (Compute > SQL Warehouses > your warehouse > Connection details), and grant this app's service principal "Can Use" on it. Upload tab shows a warning until this is set.
+  - name: "ADMIN_USERS"
+    value: ""  # comma-separated individual emails allowed to see/use the "Manage" tab (edit policies, re-tag already-ingested documents, trigger reindex). Separate from ALLOWED_USERS -- being in ALLOWED_USERS only grants normal app access, not admin capabilities.
+  - name: "ALL_ROLE_GROUPS"
+    value: "data-engineers,data-scientists,business-analysts,data-analysts,project-managers"  # options offered as checkboxes when an admin edits/creates a policy's uploader_groups / viewer_groups in the Manage tab -- keep in sync with ALLOWED_GROUPS above
+  - name: "VS_ENDPOINT"
+    value: "news_agent_vs_endpoint"  # must match notebook 04 -- used by the Manage tab's "re-tag + reindex" action
+  - name: "VS_INDEX_NAME"
+    value: "news_agent.docs.gold_chunks_index"  # must match notebook 04

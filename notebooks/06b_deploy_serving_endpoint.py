@@ -34,6 +34,10 @@ print(f"Deploying {registered_model_name}, version {model_version} (currently ta
 
 # COMMAND ----------
 
+# This model uses a custom schema (question, user_groups) instead of the
+# ChatCompletionRequest schema that agents.deploy() requires.
+# Use mlflow.deployments instead (see cells below for the correct approach).
+
 import mlflow.deployments
 
 serving_endpoint_name = "news_qa_agent_endpoint"
@@ -55,7 +59,7 @@ existing = None
 try:
     existing = deploy_client.get_endpoint(endpoint=serving_endpoint_name)
 except Exception:
-    pass
+    pass  # doesn't exist yet -- that's fine, we'll create it
 
 if existing:
     print(f"Endpoint {serving_endpoint_name} already exists -- updating it to version {model_version}.")
@@ -131,8 +135,6 @@ print(f"Deploying {registered_model_name}, version {model_version} (currently ta
 # COMMAND ----------
 
 import mlflow.deployments
-import time
-from requests.exceptions import HTTPError
 
 deploy_client = mlflow.deployments.get_deploy_client("databricks")
 
@@ -153,30 +155,14 @@ try:
 except Exception:
     pass  # doesn't exist yet -- that's fine, we'll create it
 
-max_retries = 5
-retry_delay = 30
+if existing:
+    print(f"Endpoint {serving_endpoint_name} already exists -- updating it to version {model_version}.")
+    result = deploy_client.update_endpoint(endpoint=serving_endpoint_name, config=endpoint_config)
+else:
+    print(f"Creating new endpoint {serving_endpoint_name}.")
+    result = deploy_client.create_endpoint(name=serving_endpoint_name, config=endpoint_config)
 
-for attempt in range(max_retries):
-    try:
-        if existing:
-            print(f"Endpoint {serving_endpoint_name} already exists -- updating it to version {model_version}.")
-            result = deploy_client.update_endpoint(endpoint=serving_endpoint_name, config=endpoint_config)
-        else:
-            print(f"Creating new endpoint {serving_endpoint_name}.")
-            result = deploy_client.create_endpoint(name=serving_endpoint_name, config=endpoint_config)
-        print(result)
-        break
-    except HTTPError as e:
-        if "409" in str(e) and "currently being updated" in str(e):
-            if attempt < max_retries - 1:
-                print(f"Endpoint is currently being updated. Retrying in {retry_delay} seconds... (attempt {attempt + 1}/{max_retries})")
-                time.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                print(f"Endpoint is still being updated after {max_retries} attempts. Please wait and try again later.")
-                raise
-        else:
-            raise
+print(result)
 
 # COMMAND ----------
 
