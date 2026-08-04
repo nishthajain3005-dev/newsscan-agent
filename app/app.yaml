@@ -18,4 +18,4 @@ env:
   - name: "VOLUME"
     value: "raw_files"
   - name: "SQL_WAREHOUSE_ID"
-    value: ""  # REQUIRED for the Upload tab -- set to a SQL Warehouse ID (Compute > SQL Warehouses > your warehouse > Connection details), and grant this app's service principal "Can Use" on it. Upload tab shows a warning until this is set.
+    value: "fa0acbb90f64cabc"  # REQUIRED for the Upload tab -- set to a SQL Warehouse ID (Compute > SQL Warehouses > your warehouse > Connection details), and grant this app's service principal "Can Use" on it. Upload tab shows a warning until this is set.
