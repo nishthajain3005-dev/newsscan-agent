@@ -10,7 +10,7 @@ env:
   - name: "ALLOWED_GROUPS"
     value: "data-engineers,data-scientists,business-analysts,data-analysts,project-managers"  # demo set -- membership in ANY one grants access; edit this list to change which roles are allowed later
   - name: "ALLOWED_USERS"
-    value: ""  # comma-separated individual emails, e.g. "you@company.com,teammate@company.com" -- optional, works alongside the group check
+    value: "nishthajain3027@gmail.com"  # comma-separated individual emails, e.g. "you@company.com,teammate@company.com" -- optional, works alongside the group check
   - name: "CATALOG"
     value: "news_agent"
   - name: "SCHEMA"
