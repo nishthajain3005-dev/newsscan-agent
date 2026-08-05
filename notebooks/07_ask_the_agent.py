@@ -24,8 +24,13 @@ serving_endpoint_name = "news_qa_agent_endpoint"
 
 def ask(question: str, user_groups: str = ""):
     """user_groups: comma-separated group names, e.g. "data-engineers,project-managers".
-    Empty string = no role-based filtering (see notebook 05's role-based visibility note).
-    The app always sends the real caller's groups; here you're simulating that."""
+    IMPORTANT: empty string now means "this caller has zero groups" -- the
+    agent fails CLOSED, not open, so you'll get "I couldn't find anything...
+    " for everything, even general/unrestricted docs, unless you pass real
+    groups. (This changed from an earlier version that treated "" as "skip
+    filtering" -- that was a real access-control bug: a genuinely group-less
+    real user was getting unrestricted access instead of none.) The app
+    always sends the real caller's groups; here you're simulating that."""
     resp = requests.post(
         f"https://{workspace_url}/serving-endpoints/{serving_endpoint_name}/invocations",
         headers={"Authorization": f"Bearer {token}"},
@@ -34,7 +39,17 @@ def ask(question: str, user_groups: str = ""):
     return resp.json()
 
 
-ask("What are the main topics covered in the documents I uploaded?")
+# Pass real groups to get real results -- "" (no groups) now correctly returns nothing.
+ask("What are the main topics covered in the documents I uploaded?", user_groups="data-engineers,project-managers")
+
+# COMMAND ----------
+
+# MAGIC %md #### Confirm the fail-closed default
+# MAGIC A caller with NO groups at all should see nothing -- not everything.
+
+# COMMAND ----------
+
+ask("What are the main topics covered in the documents I uploaded?")  # user_groups="" -> expect "I couldn't find anything..."
 
 # COMMAND ----------
 
@@ -48,7 +63,7 @@ ask("Summarize the resume that was uploaded.", user_groups="project-managers")
 
 # COMMAND ----------
 
-ask("Summarize the resume that was uploaded.", user_groups="data-analysts")
+ask("Summarize the resume that was uploaded.", user_groups="data-engineers")
 
 # COMMAND ----------
 
@@ -80,8 +95,3 @@ model.predict(pd.DataFrame({
     "question": ["Summarize the latest article in two sentences."],
     "user_groups": ["data-engineers,project-managers"],
 }))
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC select * from news_agent.docs.gold_chunks

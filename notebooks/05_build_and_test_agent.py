@@ -22,12 +22,16 @@
 # MAGIC `viewer_groups=[data-engineers, data-analysts]` never surfaces for a Business
 # MAGIC Analyst's question, even if it's the closest semantic match.
 # MAGIC
-# MAGIC If `user_groups` is empty/omitted, filtering is skipped (open access) — this
-# MAGIC keeps ad-hoc notebook testing (step 07) simple, but means the *app* is what's
-# MAGIC actually responsible for always passing the caller's real groups in
-# MAGIC production. This is an application-layer control, not Unity Catalog row-level
-# MAGIC security — good enough for "don't surface this in answers to the wrong role"
-# MAGIC but not a substitute for UC-level ACLs if the underlying files themselves
+# MAGIC `user_groups` defaults to fail-CLOSED: if it's empty (a caller with no
+# MAGIC known groups), the filter matches nothing, so they see nothing restricted
+# MAGIC -- not everything. (An earlier version of this treated empty as "skip
+# MAGIC filtering," which was a real bug: it silently gave a genuinely group-less
+# MAGIC user open access to everything, the opposite of fail-safe.) The *app* is
+# MAGIC responsible for always passing the caller's real groups in production --
+# MAGIC see app.py's ask_agent(). This is an application-layer control, not Unity
+# MAGIC Catalog row-level security — good enough for "don't surface this in answers
+# MAGIC to the wrong role" but not a substitute for UC-level ACLs if the underlying
+# MAGIC files themselves
 # MAGIC need to be locked down too.
 
 # COMMAND ----------
@@ -63,18 +67,22 @@ class NewsQAAgent(mlflow.pyfunc.PythonModel):
         self.llm = ChatDatabricks(endpoint=chat_model_endpoint, max_tokens=1000, temperature=0.1)
 
     def _retrieve(self, question, user_groups):
-        num_candidates = NUM_RESULTS * OVER_FETCH_MULTIPLIER if user_groups else NUM_RESULTS
+        # Always over-fetch + filter -- including when user_groups is empty.
+        # An empty/unknown group set must mean "can see nothing restricted",
+        # NOT "no filter requested" -- treating [] as "skip filtering" would
+        # silently grant a group-less user open access to everything, which
+        # is the opposite of fail-safe. If you need an actual "show me
+        # everything, unfiltered" mode for ad-hoc debugging, do that
+        # explicitly outside this class rather than by omitting user_groups.
         results = self.index.similarity_search(
             query_text=question,
             columns=["chunk_text", "path", "title", "category", "viewer_groups"],
-            num_results=num_candidates,
+            num_results=NUM_RESULTS * OVER_FETCH_MULTIPLIER,
         )
         rows = results.get("result", {}).get("data_array", [])
         # each row: [chunk_text, path, title, category, viewer_groups]
-
-        if user_groups:
-            user_group_set = set(user_groups)
-            rows = [r for r in rows if user_group_set & set(r[4] or [])]
+        user_group_set = set(user_groups)
+        rows = [r for r in rows if user_group_set & set(r[4] or [])]
 
         return rows[:NUM_RESULTS]
 
@@ -132,7 +140,7 @@ agent.load_context(None)
 
 test_input = pd.DataFrame({
     "question": ["What is the most recent article about, in a sentence?"],
-    "user_groups": [""],  # "" = no role filtering, for a quick unrestricted sanity check
+    "user_groups": ["data-engineers,project-managers"],  # empty would now correctly return nothing (fail-closed) -- use real groups to sanity check retrieval itself
 })
 result = agent.predict(None, test_input)
 result

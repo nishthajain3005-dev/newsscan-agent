@@ -569,6 +569,22 @@ with upload_tab:
                 f"Signed in as {user_email}{role_note}. Ask an admin to add your group to a "
                 "policy's `uploader_groups` in the `upload_policies` table."
             )
+            with st.expander("Diagnostic details (for whoever's troubleshooting this)"):
+                st.write(f"**is_individually_allowed** (in ALLOWED_USERS): `{is_individually_allowed}`")
+                st.write(f"**user_full_groups** (real Databricks groups detected): `{sorted(user_full_groups) or '(none)'}`")
+                try:
+                    raw_policies = run_query(f"SELECT policy_id, active, uploader_groups FROM {POLICIES_TABLE}")
+                    st.write(f"**Raw rows in `{POLICIES_TABLE}`:** {len(raw_policies)}")
+                    if raw_policies:
+                        st.table(raw_policies)
+                    else:
+                        st.warning(
+                            f"`{POLICIES_TABLE}` returned ZERO rows — either notebook "
+                            f"`00b_setup_access_policies.py` hasn't been run yet, or the app is "
+                            f"pointed at the wrong catalog/schema (check CATALOG/SCHEMA in app.yaml)."
+                        )
+                except Exception as e:
+                    st.error(f"Raw policy query also failed: {e}")
         else:
             policy_labels = {p["policy_id"]: f"{p['display_name']}" for p in policies}
             selected_id = st.selectbox(

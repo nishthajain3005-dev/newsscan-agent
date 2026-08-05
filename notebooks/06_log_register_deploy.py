@@ -46,17 +46,17 @@ class NewsQAAgent(mlflow.pyfunc.PythonModel):
         self.llm = ChatDatabricks(endpoint=chat_model_endpoint, max_tokens=1000, temperature=0.1)
 
     def _retrieve(self, question, user_groups):
-        num_candidates = NUM_RESULTS * OVER_FETCH_MULTIPLIER if user_groups else NUM_RESULTS
+        # Always over-fetch + filter -- including when user_groups is empty.
+        # An empty/unknown group set must mean "can see nothing restricted",
+        # NOT "no filter requested" -- see notebook 05's comment for why.
         results = self.index.similarity_search(
             query_text=question,
             columns=["chunk_text", "path", "title", "category", "viewer_groups"],
-            num_results=num_candidates,
+            num_results=NUM_RESULTS * OVER_FETCH_MULTIPLIER,
         )
         rows = results.get("result", {}).get("data_array", [])
-
-        if user_groups:
-            user_group_set = set(user_groups)
-            rows = [r for r in rows if user_group_set & set(r[4] or [])]
+        user_group_set = set(user_groups)
+        rows = [r for r in rows if user_group_set & set(r[4] or [])]
 
         return rows[:NUM_RESULTS]
 
