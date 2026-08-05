@@ -18,7 +18,7 @@ env:
   - name: "VOLUME"
     value: "raw_files"
   - name: "SQL_WAREHOUSE_ID"
-    value: "fa0acbb90f64cabc"  # REQUIRED for the Upload tab -- set to a SQL Warehouse ID (Compute > SQL Warehouses > your warehouse > Connection details), and grant this app's service principal "Can Use" on it. Upload tab shows a warning until this is set.
+    value: "5bf835522ccd6e36"  # REQUIRED for the Upload tab -- set to a SQL Warehouse ID (Compute > SQL Warehouses > your warehouse > Connection details), and grant this app's service principal "Can Use" on it. Upload tab shows a warning until this is set.
   - name: "ADMIN_USERS"
     value: ""  # comma-separated individual emails allowed to see/use the "Manage" tab (edit policies, re-tag already-ingested documents, trigger reindex). Separate from ALLOWED_USERS -- being in ALLOWED_USERS only grants normal app access, not admin capabilities.
   - name: "ALL_ROLE_GROUPS"

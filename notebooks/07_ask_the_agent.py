@@ -80,3 +80,8 @@ model.predict(pd.DataFrame({
     "question": ["Summarize the latest article in two sentences."],
     "user_groups": ["data-engineers,project-managers"],
 }))
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC select * from news_agent.docs.gold_chunks
