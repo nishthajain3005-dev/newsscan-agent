@@ -215,6 +215,22 @@ def parse_sql_array(value):
     return []
 
 
+def parse_sql_bool(value) -> bool:
+    """The SQL Statement Execution API returns EVERY column value as a
+    string, including booleans -- a BOOLEAN column's value comes back as the
+    Python string "true" or "false", never an actual bool. Naively calling
+    bool(value) on that is a real bug: bool("false") is True in Python,
+    since any non-empty string is truthy. This was causing
+    require_content_check=false to be read as "run the content check
+    anyway." Always use this instead of bool(...) for any value read out of
+    a run_query() row."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() == "true"
+
+
 def get_current_user_email():
     """Databricks Apps always forwards the logged-in user's email in this
     header — no special auth mode needs to be enabled for this part."""
@@ -683,7 +699,7 @@ with upload_tab:
             allowed_categories = parse_sql_array(selected_policy.get("allowed_categories"))
             allowed_extensions = parse_sql_array(selected_policy.get("allowed_extensions"))
             viewer_groups = parse_sql_array(selected_policy.get("viewer_groups"))
-            require_content_check = bool(selected_policy.get("require_content_check"))
+            require_content_check = parse_sql_bool(selected_policy.get("require_content_check"))
 
             st.markdown(
                 f"**{selected_policy.get('description', '')}**\n\n"
@@ -776,8 +792,8 @@ if manage_tab is not None:
                         allowed_extensions = st.text_input("Allowed file extensions (comma-separated, no dots)", value=", ".join(parse_sql_array(p.get("allowed_extensions"))))
                         uploader_groups = st.multiselect("Who can upload (uploader_groups)", options=ALL_ROLE_GROUPS, default=[g for g in parse_sql_array(p.get("uploader_groups")) if g in ALL_ROLE_GROUPS])
                         viewer_groups = st.multiselect("Who can view/query (viewer_groups)", options=ALL_ROLE_GROUPS, default=[g for g in parse_sql_array(p.get("viewer_groups")) if g in ALL_ROLE_GROUPS])
-                        require_content_check = st.checkbox("Require content check (LLM verifies uploaded content matches allowed categories)", value=bool(p.get("require_content_check")))
-                        active = st.checkbox("Active (shown to uploaders)", value=bool(p.get("active")))
+                        require_content_check = st.checkbox("Require content check (LLM verifies uploaded content matches allowed categories)", value=parse_sql_bool(p.get("require_content_check")))
+                        active = st.checkbox("Active (shown to uploaders)", value=parse_sql_bool(p.get("active")))
 
                         if st.form_submit_button("Save policy"):
                             update_policy(edit_id, {
