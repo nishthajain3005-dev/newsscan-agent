@@ -10,7 +10,7 @@ env:
   - name: "ALLOWED_GROUPS"
     value: "data-engineers,data-scientists,business-analysts,data-analysts,project-managers"  # demo set -- membership in ANY one grants access; edit this list to change which roles are allowed later
   - name: "ALLOWED_USERS"
-    value: "nishthajain3027@gmail.com,harsh.parmar@kadellabs.com"  # comma-separated individual emails, e.g. "you@company.com,teammate@company.com" -- optional, works alongside the group check
+    value: "nishthajain3005@gmail.com"  # comma-separated individual emails, e.g. "you@company.com,teammate@company.com" -- optional, works alongside the group check
   - name: "CATALOG"
     value: "news_agent"
   - name: "SCHEMA"
@@ -19,6 +19,8 @@ env:
     value: "raw_files"
   - name: "SQL_WAREHOUSE_ID"
     value: "5bf835522ccd6e36"  # REQUIRED for the Upload tab -- set to a SQL Warehouse ID (Compute > SQL Warehouses > your warehouse > Connection details), and grant this app's service principal "Can Use" on it. Upload tab shows a warning until this is set.
+  - name: "OPEN_UPLOAD_FOR_ALL_USERS"
+    value: "true"  # true (default): anyone with app access can pick from ANY active policy when uploading -- the uploader decides who sees each document by choosing the policy. false: only accounts whose groups overlap a policy's uploader_groups can use that policy (role-gated). Flip any time, no data migration needed.
   - name: "ADMIN_USERS"
     value: ""  # comma-separated individual emails allowed to see/use the "Manage" tab (edit policies, re-tag already-ingested documents, trigger reindex). Separate from ALLOWED_USERS -- being in ALLOWED_USERS only grants normal app access, not admin capabilities.
   - name: "ALL_ROLE_GROUPS"

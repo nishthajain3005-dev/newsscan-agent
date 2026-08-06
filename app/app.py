@@ -22,14 +22,23 @@ grant is still pending, or for one-off access without touching group
 membership.
 
 DOCUMENT-LEVEL ACCESS POLICIES: on top of app access above, the "Upload" tab
-lets you set/apply policies about WHAT can be uploaded and WHO can see it once
-ingested -- e.g. "only Project Managers may upload here, content must actually
-be a resume, and only Data Engineers + Data Analysts can ever query it back".
-Policies live in the `upload_policies` Delta table (see
+lets an uploader pick which policy applies to each document they upload --
+each policy defines the content rules (file types, optional AI content check)
+and, most importantly, WHO can see/query that document once it's ingested
+(`viewer_groups`). Policies live in the `upload_policies` Delta table (see
 notebooks/00b_setup_access_policies.py) and are read live on every visit -- no
-redeploy needed to add/edit a policy. See the README's "Document-level upload
-policies" section for the one-time SQL Warehouse permission grant this tab
-needs.
+redeploy needed to add/edit a policy.
+
+By default (OPEN_UPLOAD_FOR_ALL_USERS=true) ANY user who can open the app can
+pick from ANY active policy -- the uploader is the "owner" who decides who
+gets to see each document they upload, by choosing the right policy at upload
+time. An admin still fully controls the MENU of policies on offer (via the
+Manage tab), just not who's allowed to pick from that menu. Set
+OPEN_UPLOAD_FOR_ALL_USERS=false in app.yaml to go back to role-gated
+uploading, where each policy's `uploader_groups` restricts who can even see
+it as an option -- see get_eligible_policies() for exact semantics. See the
+README's "Document-level upload policies" section for the one-time SQL
+Warehouse permission grant this tab needs either way.
 
 ADMIN "MANAGE" TAB: visible only to accounts listed in ADMIN_USERS (separate
 from ALLOWED_USERS -- everyone in ALLOWED_USERS can use the app, only
@@ -85,6 +94,15 @@ ADMIN_USERS = {
     if u.strip()
 }
 
+# If true (default): anyone who can open the app can upload under ANY active
+# policy -- the uploader picks which policy (audience + content rules)
+# applies to each document at upload time, i.e. the uploader is the "owner"
+# deciding who sees it. If false: only accounts whose groups overlap a
+# policy's uploader_groups can use that policy (the original role-gated
+# behavior) -- see get_eligible_policies() for details. Flip this any time in
+# app.yaml, no data migration needed either direction.
+OPEN_UPLOAD_FOR_ALL_USERS = os.environ.get("OPEN_UPLOAD_FOR_ALL_USERS", "true").strip().lower() == "true"
+
 # Comma-separated list of group names -- membership in ANY ONE of these grants
 # access. Demo default: five role-based groups. Change freely later -- this is
 # the one place that needs editing to add/remove/rename which roles are allowed.
@@ -114,16 +132,55 @@ def get_workspace_client():
 
 # ---- SQL Warehouse helpers (used by the Upload tab to read policies / write the manifest) ----
 
-def run_query(statement: str):
-    """Runs a SQL statement against SQL_WAREHOUSE_ID and returns rows as a list
-    of dicts. Requires the app's service principal to have "Can Use" on that
-    warehouse -- see README "Document-level upload policies" section."""
+def _execute_and_wait(statement: str, poll_timeout_seconds: int = 90):
+    """Runs a statement and polls until it actually finishes, instead of
+    trusting whatever comes back after the synchronous wait_timeout window.
+
+    IMPORTANT: wait_timeout on execute_statement (capped at 50s by the API,
+    we use 30s) is NOT the same as "the query is done" -- if the SQL Warehouse
+    is stopped/cold (common with serverless warehouses that auto-suspend),
+    it can take well over 30s just to start up. When that timeout elapses
+    with the statement still PENDING/RUNNING, resp.result.data_array comes
+    back empty -- which looks EXACTLY like an empty table if you don't check
+    the actual status. This caused a real bug: a cold warehouse made an
+    upload_policies table with real rows appear to have zero rows. This
+    polls the statement's actual status instead of assuming "empty" means
+    "no rows"."""
+    import time
+
     if not SQL_WAREHOUSE_ID:
         raise RuntimeError("SQL_WAREHOUSE_ID is not set in app.yaml -- the Upload tab needs a SQL Warehouse to read policies / write the upload log.")
     w = get_workspace_client()
     resp = w.statement_execution.execute_statement(
         statement=statement, warehouse_id=SQL_WAREHOUSE_ID, catalog=CATALOG, schema=SCHEMA, wait_timeout="30s",
     )
+
+    elapsed = 0
+    poll_interval = 2
+    while resp.status and resp.status.state and resp.status.state.value in ("PENDING", "RUNNING"):
+        if elapsed >= poll_timeout_seconds:
+            raise RuntimeError(
+                f"Query still {resp.status.state.value} after {poll_timeout_seconds}s -- the SQL Warehouse "
+                f"is likely still starting up (cold start). Wait a bit and try again; if this keeps "
+                f"happening, check the warehouse isn't set to auto-stop so aggressively, or that it's "
+                f"actually reachable."
+            )
+        time.sleep(poll_interval)
+        resp = w.statement_execution.get_statement(resp.statement_id)
+        elapsed += poll_interval
+
+    if resp.status and resp.status.state and resp.status.state.value not in ("SUCCEEDED",):
+        error_msg = resp.status.error.message if resp.status.error else resp.status.state.value
+        raise RuntimeError(f"Query failed ({resp.status.state.value}): {error_msg}")
+
+    return resp
+
+
+def run_query(statement: str):
+    """Runs a SQL statement against SQL_WAREHOUSE_ID and returns rows as a list
+    of dicts. Requires the app's service principal to have "Can Use" on that
+    warehouse -- see README "Document-level upload policies" section."""
+    resp = _execute_and_wait(statement)
     if not resp.result or not resp.result.data_array:
         return []
     columns = [c.name for c in resp.manifest.schema.columns]
@@ -131,13 +188,8 @@ def run_query(statement: str):
 
 
 def run_statement(statement: str):
-    """Fire-and-forget SQL (INSERT/UPDATE) against SQL_WAREHOUSE_ID."""
-    if not SQL_WAREHOUSE_ID:
-        raise RuntimeError("SQL_WAREHOUSE_ID is not set in app.yaml -- the Upload tab needs a SQL Warehouse to read policies / write the upload log.")
-    w = get_workspace_client()
-    w.statement_execution.execute_statement(
-        statement=statement, warehouse_id=SQL_WAREHOUSE_ID, catalog=CATALOG, schema=SCHEMA, wait_timeout="30s",
-    )
+    """SQL (INSERT/UPDATE) against SQL_WAREHOUSE_ID -- waits for actual completion."""
+    _execute_and_wait(statement)
 
 
 def sql_string_literal(value: str) -> str:
@@ -223,12 +275,30 @@ def get_user_groups(email: str) -> tuple[set[str] | None, dict]:
 
 
 def get_eligible_policies(user_groups: set[str], is_individually_allowed: bool):
-    """Returns active policies this user is allowed to upload under: their
-    groups overlap the policy's uploader_groups. Individually-allow-listed
-    users (no group info to check) can see every active policy -- a
-    deliberate simplification worth tightening if you need per-user policy
-    restriction beyond groups."""
+    """Which active policies this user can pick from when uploading.
+
+    Two modes, controlled by OPEN_UPLOAD_FOR_ALL_USERS in app.yaml:
+
+    - OPEN (default, True): anyone who can already open the app can upload
+      under ANY active policy -- the uploader picks which policy (i.e. which
+      audience / content rules) applies to THIS document at upload time. This
+      is the "uploader is the owner and decides who sees it" model. Admins
+      still fully control the MENU of policies available (via the Manage
+      tab), just not who's allowed to pick from that menu.
+    - RESTRICTED (False): only users whose real groups overlap a policy's
+      `uploader_groups` can see/use that policy (the original behavior) --
+      individually-allow-listed users still see every active policy in this
+      mode too, since there's no group to check for them.
+
+    `uploader_groups` on each policy row is preserved either way -- flipping
+    the toggle back to RESTRICTED later re-activates it with zero data
+    migration needed.
+    """
     rows = run_query(f"SELECT * FROM {POLICIES_TABLE} WHERE active = true")
+
+    if OPEN_UPLOAD_FOR_ALL_USERS:
+        return rows
+
     eligible = []
     for r in rows:
         uploader_groups = set(parse_sql_array(r.get("uploader_groups")))
@@ -542,12 +612,19 @@ with ask_tab:
 
 
 with upload_tab:
-    st.caption(
-        "Upload documents directly into the pipeline's Volume. Which policies you see, what "
-        "you're allowed to upload, and who can later see/query that content are all driven by "
-        "the `upload_policies` table — ask an admin to add a policy for your team if you don't "
-        "see one here."
-    )
+    if OPEN_UPLOAD_FOR_ALL_USERS:
+        st.caption(
+            "Upload a document, then pick which policy applies to it — that decides who'll be "
+            "able to see it later, and what content rules it gets checked against. You choose the "
+            "policy per document; an admin controls the menu of policies available (Manage tab)."
+        )
+    else:
+        st.caption(
+            "Upload documents directly into the pipeline's Volume. Which policies you see, what "
+            "you're allowed to upload, and who can later see/query that content are all driven by "
+            "the `upload_policies` table — ask an admin to add a policy for your team if you don't "
+            "see one here."
+        )
 
     if not SQL_WAREHOUSE_ID:
         st.warning(
@@ -564,12 +641,20 @@ with upload_tab:
             st.error(f"Couldn't load upload policies: {e}")
 
         if not policies:
-            st.info(
-                "No upload policy currently allows your role to upload here. "
-                f"Signed in as {user_email}{role_note}. Ask an admin to add your group to a "
-                "policy's `uploader_groups` in the `upload_policies` table."
-            )
+            if OPEN_UPLOAD_FOR_ALL_USERS:
+                st.info(
+                    "There are no active policies to choose from yet. Ask an admin to create one "
+                    "in the Manage tab (or `INSERT` a row into `upload_policies`) — any active "
+                    "policy will then be available to everyone here to pick from."
+                )
+            else:
+                st.info(
+                    "No upload policy currently allows your role to upload here. "
+                    f"Signed in as {user_email}{role_note}. Ask an admin to add your group to a "
+                    "policy's `uploader_groups` in the `upload_policies` table."
+                )
             with st.expander("Diagnostic details (for whoever's troubleshooting this)"):
+                st.write(f"**OPEN_UPLOAD_FOR_ALL_USERS:** `{OPEN_UPLOAD_FOR_ALL_USERS}`")
                 st.write(f"**is_individually_allowed** (in ALLOWED_USERS): `{is_individually_allowed}`")
                 st.write(f"**user_full_groups** (real Databricks groups detected): `{sorted(user_full_groups) or '(none)'}`")
                 try:
@@ -580,15 +665,16 @@ with upload_tab:
                     else:
                         st.warning(
                             f"`{POLICIES_TABLE}` returned ZERO rows — either notebook "
-                            f"`00b_setup_access_policies.py` hasn't been run yet, or the app is "
-                            f"pointed at the wrong catalog/schema (check CATALOG/SCHEMA in app.yaml)."
+                            f"`00b_setup_access_policies.py` hasn't been run yet, no policy has "
+                            f"`active = true`, or the app is pointed at the wrong catalog/schema "
+                            f"(check CATALOG/SCHEMA in app.yaml)."
                         )
                 except Exception as e:
                     st.error(f"Raw policy query also failed: {e}")
         else:
             policy_labels = {p["policy_id"]: f"{p['display_name']}" for p in policies}
             selected_id = st.selectbox(
-                "Upload policy",
+                "Who should be able to see this document? (policy)",
                 options=list(policy_labels.keys()),
                 format_func=lambda pid: policy_labels[pid],
             )
